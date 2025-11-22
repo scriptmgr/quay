@@ -29,7 +29,7 @@ DATA_DIR="/var/lib/quay"
 PG_DIR="/var/lib/postgres"
 REDIS_DIR="/var/lib/redis"
 CLAIR_DIR="/var/lib/clair"
-ENV_FILE="${DATA_DIR}/.env"
+ENV_FILE="${OPT_ROOT}/.env"
 CREDS_DIR="${DATA_DIR}/credentials"
 LOG_DIR="${DATA_DIR}/logs"
 STORAGE_DIR="${DATA_DIR}/storage"
@@ -42,7 +42,8 @@ RUN_DIR="${DATA_DIR}/run"
 
 # Ensure base dirs
 mkdir -p "$OPT_ROOT" "$BIN_DIR" "$CONFIG_DIR" "$CREDS_DIR" "$LOG_DIR" "$STORAGE_DIR" "$PG_DIR" "$REDIS_DIR" "$CLAIR_DIR" "$RUN_DIR"
-chmod 700 "$OPT_ROOT" "$BIN_DIR" "$CONFIG_DIR" "$CREDS_DIR" "$LOG_DIR" "$STORAGE_DIR" "$PG_DIR" "$REDIS_DIR" "$CLAIR_DIR" "$RUN_DIR"
+chmod 755 "$OPT_ROOT" "$BIN_DIR" "$CONFIG_DIR" "$LOG_DIR" "$STORAGE_DIR" "$PG_DIR" "$REDIS_DIR" "$CLAIR_DIR" "$RUN_DIR"
+chmod 700 "$CREDS_DIR"
 
 ### --- preflight checks ---
 need sh
@@ -118,12 +119,14 @@ is_valid_reg_domain "$DOM_CAND" || fail "DOMAIN must be a valid registerable dom
 DOMAIN="$DOM_CAND"
 
 ### --- SMTP probe (host bridge IP discovery + check) ---
-# Discover docker bridge IP (default 172.17.0.1)
+# Discover container bridge IP (default 172.17.0.1)
 BRIDGE_IP="172.17.0.1"
 if have ip; then
-  # Try docker0
-  DI=$(ip -4 addr show docker0 2>/dev/null | awk '/inet /{print $2}' | awk -F/ '{print $1}')
-  if [ -n "$DI" ]; then BRIDGE_IP="$DI"; fi
+  # Try docker0 first, then podman's cni-podman0 or any bridge
+  for iface in docker0 cni-podman0 podman0 br0; do
+    DI=$(ip -4 addr show "$iface" 2>/dev/null | awk '/inet /{print $2}' | awk -F/ '{print $1}')
+    if [ -n "$DI" ]; then BRIDGE_IP="$DI"; break; fi
+  done
 fi
 
 SMTP_HOST="$BRIDGE_IP"
@@ -152,7 +155,14 @@ port_in_use() {
   fi
 }
 # Load QUAY_PORT from .env if present and usable; else pick a free one and persist
-if [ "${QUAY_BIND_ADDR:-}" ]; then :; else QUAY_BIND_ADDR="$BRIDGE_IP"; fi
+if [ "${QUAY_BIND_ADDR:-}" ]; then :; else
+  # Use BRIDGE_IP only if it exists as a local interface, otherwise 0.0.0.0
+  if have ip && ip addr show 2>/dev/null | grep -q "inet $BRIDGE_IP/"; then
+    QUAY_BIND_ADDR="$BRIDGE_IP"
+  else
+    QUAY_BIND_ADDR="0.0.0.0"
+  fi
+fi
 if [ "${QUAY_PORT:-}" ]; then
   if port_in_use "$QUAY_PORT"; then
     # If it's in use we try to detect if it's our compose later; otherwise reassign
@@ -249,12 +259,18 @@ persist_kv "EXTERNAL_TLS_TERMINATION" "true"
 persist_kv "SERVER_HOSTNAME" "$DOMAIN"
 
 ### --- render Quay config.yaml (non-destructive: create-if-missing, else patch keys) ---
-CFG="${CONFIG_DIR}/config.yaml"
+# Quay expects config in stack subdirectory
+STACK_DIR="${CONFIG_DIR}/stack"
+mkdir -p "$STACK_DIR"
+chmod 755 "$STACK_DIR"
+CFG="${STACK_DIR}/config.yaml"
 write_cfg() {
 cat >"$CFG.tmp" <<EOF
 SERVER_HOSTNAME: ${DOMAIN}
 PREFERRED_URL_SCHEME: https
 EXTERNAL_TLS_TERMINATION: true
+TESTING: false
+SETUP_COMPLETE: true
 
 FEATURE_USER_CREATION: true
 FEATURE_USER_CREATION_INVITE_ONLY: false
@@ -290,14 +306,20 @@ SECRET_KEY: $(cat "${QUAY_SECRET_FILE}")
 DATABASE_SECRET_KEY: $(cat "${QUAY_SECRET_FILE}")
 
 # Database
-DB_URI: postgresql+psycopg2://${DB_USER}:$(cat "${DB_PASS_FILE}")@postgres:5432/quay
+DB_URI: postgresql://${DB_USER}:$(cat "${DB_PASS_FILE}")@postgres:5432/quay
 
-# Redis
-BUILDLOGS_REDIS: redis://redis:6379/0
+# Redis configuration
+BUILDLOGS_REDIS:
+  host: redis
+  port: 6379
+
+USER_EVENTS_REDIS:
+  host: redis
+  port: 6379
 
 EOF
 mv "$CFG.tmp" "$CFG"
-chmod 600 "$CFG"
+chmod 644 "$CFG"
 }
 
 if [ ! -f "$CFG" ]; then
@@ -308,33 +330,67 @@ else
   :
 fi
 
+### --- create postgres init scripts ---
+INIT_DB_DIR="${DATA_DIR}/init-db"
+mkdir -p "$INIT_DB_DIR"
+chmod 755 "$INIT_DB_DIR"
+
+# Quay database extensions (runs first due to 01- prefix)
+cat >"${INIT_DB_DIR}/01-init-quay.sh" <<'EOF'
+#!/bin/bash
+set -e
+
+# Create pg_trgm extension for Quay
+psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-EOSQL
+    CREATE EXTENSION IF NOT EXISTS pg_trgm;
+EOSQL
+EOF
+chmod 755 "${INIT_DB_DIR}/01-init-quay.sh"
+
+# Clair database setup (runs second due to 02- prefix)
+cat >"${INIT_DB_DIR}/02-init-clair.sh" <<EOF
+#!/bin/bash
+set -e
+
+# Create clair user and database
+psql -v ON_ERROR_STOP=1 --username "\$POSTGRES_USER" --dbname "\$POSTGRES_DB" <<-EOSQL
+    CREATE USER ${CLAIR_DB_USER} WITH PASSWORD '$(cat "${CLAIR_DB_PASS_FILE}")';
+    CREATE DATABASE clair OWNER ${CLAIR_DB_USER};
+    GRANT ALL PRIVILEGES ON DATABASE clair TO ${CLAIR_DB_USER};
+EOSQL
+EOF
+chmod 755 "${INIT_DB_DIR}/02-init-clair.sh"
+
 ### --- render docker-compose.yml (always refresh; mounts keep data) ---
 cat >"$COMPOSE_FILE.tmp" <<'YAML'
-version: "3.9"
-
 services:
   postgres:
-    image: postgres:15-alpine
+    image: docker.io/library/postgres:15-alpine
     restart: unless-stopped
+    env_file: .env
     environment:
       - POSTGRES_DB=quay
       - POSTGRES_USER=${DB_USER}
-      - POSTGRES_PASSWORD_FILE=${DB_PASS_FILE}
+      - POSTGRES_PASSWORD_FILE=/run/secrets/db_password
     volumes:
       - ${POSTGRES_DIR}:/var/lib/postgresql/data:z
+      - ${DB_PASS_FILE}:/run/secrets/db_password:ro,z
+      - ${DATA_DIR}/init-db:/docker-entrypoint-initdb.d:ro,z
     networks: [quay]
 
   redis:
-    image: redis:7-alpine
+    image: docker.io/library/redis:7-alpine
     restart: unless-stopped
+    env_file: .env
     command: ["redis-server","--appendonly","yes"]
     volumes:
       - ${REDIS_DIR}:/data:z
     networks: [quay]
 
   clair:
-    image: quay.io/projectquay/clair:latest
+    image: quay.io/projectquay/clair:4.8.0
     restart: unless-stopped
+    env_file: .env
     depends_on: [postgres]
     environment:
       - CLAIR_CONF=/clair-config/config.yaml
@@ -344,25 +400,22 @@ services:
     networks: [quay]
 
   quay:
-    image: quay.io/projectquay/quay:latest
+    image: quay.io/projectquay/quay:3.15.2
     restart: unless-stopped
+    env_file: .env
     depends_on: [postgres, redis, clair]
     ports:
       - ${QUAY_BIND_ADDR}:${QUAY_PORT}:8080
-    environment:
-      - CONFIG_SECRET=${QUAY_SECRET_KEY_FILE}
-      - QUAYCONF=/conf/stack
     volumes:
-      - ${DATA_DIR}/config:/conf/stack:z
-      - ${DATA_DIR}/config:/etc/quay-config:z
-      - ${DATA_DIR}/config:/quay-registry/conf:z
+      - ${DATA_DIR}/config/stack:/quay-registry/conf/stack:z
       - ${DATA_DIR}/logs:/var/log/quay:z
       - ${DATA_DIR}/storage:/datastorage/registry:z
     networks: [quay]
 
   # Cosign helper (no long-running container; used for on-demand commands)
   cosign:
-    image: ghcr.io/sigstore/cosign:v2.2.4
+    image: ghcr.io/sigstore/cosign/cosign:v2.4.1
+    env_file: .env
     command: ["sh","-c","sleep 1"]
     volumes:
       - ${COSIGN_KEY_FILE}:/keys/cosign.key:z
@@ -373,7 +426,8 @@ services:
 
   # Syft helper (SBOM generator)
   syft:
-    image: anchore/syft:latest
+    image: docker.io/anchore/syft:latest
+    env_file: .env
     command: ["sh","-c","sleep 1"]
     networks: [quay]
     deploy:
@@ -390,26 +444,31 @@ chmod 644 "$COMPOSE_FILE"
 ### --- Clair config (minimal v4) ---
 CLAIR_CONF_DIR="${DATA_DIR}/clair-config"
 mkdir -p "$CLAIR_CONF_DIR"
-chmod 700 "$CLAIR_CONF_DIR"
+chmod 755 "$CLAIR_CONF_DIR"
 cat >"${CLAIR_CONF_DIR}/config.yaml.tmp" <<EOF
 http_listen_addr: :6060
 introspection_addr: :6061
 indexer:
   connstring: host=postgres port=5432 user=${CLAIR_DB_USER} password=$(cat "${CLAIR_DB_PASS_FILE}") dbname=clair sslmode=disable
+  migrations: true
 matcher:
   connstring: host=postgres port=5432 user=${CLAIR_DB_USER} password=$(cat "${CLAIR_DB_PASS_FILE}") dbname=clair sslmode=disable
+  migrations: true
 notifier:
   connstring: host=postgres port=5432 user=${CLAIR_DB_USER} password=$(cat "${CLAIR_DB_PASS_FILE}") dbname=clair sslmode=disable
+  migrations: true
 EOF
 mv "${CLAIR_CONF_DIR}/config.yaml.tmp" "${CLAIR_CONF_DIR}/config.yaml"
-chmod 600 "${CLAIR_CONF_DIR}/config.yaml"
+chmod 644 "${CLAIR_CONF_DIR}/config.yaml"
 
 ### --- bring up stack ---
 info "Pulling container images (this may take a bit)…"
-$COMPOSE -f "$COMPOSE_FILE" pull >/dev/null 2>&1 || true
+$COMPOSE -f "$COMPOSE_FILE" pull 2>&1 | grep -v "Pulling\|Already exists\|Download complete\|Pull complete" || true
 
 info "Starting Quay stack…"
-$COMPOSE -f "$COMPOSE_FILE" up -d >/dev/null 2>&1 || fail "Failed to start Quay stack"
+if ! $COMPOSE -f "$COMPOSE_FILE" up -d 2>&1; then
+  fail "Failed to start Quay stack"
+fi
 
 ### --- health checks (bounded retries, minimal output) ---
 sleep 2
@@ -437,7 +496,7 @@ set -eu
 umask 077
 
 DATA_DIR="/var/lib/quay"
-ENV_FILE="${DATA_DIR}/.env"
+ENV_FILE="${OPT_ROOT}/.env"
 GC_LOCK="${DATA_DIR}/run/gc.lock"
 GC_FLAG_FIRST="${DATA_DIR}/run/gc-first-run"
 # shellcheck disable=SC1090
