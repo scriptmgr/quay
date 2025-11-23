@@ -84,24 +84,39 @@ The installer will:
 
 ### Directory Structure
 
+All data is stored under `/opt/quay/rootfs/` for easy backup:
+
 ```
 /opt/quay/
 ├── docker-compose.yml
-└── .env
+├── .env
+├── bin/                        # Helper scripts (GC, etc.)
+└── rootfs/
+    ├── db/
+    │   ├── postgres/           # Postgres data
+    │   └── redis/              # Redis data
+    ├── data/
+    │   ├── quay/
+    │   │   ├── storage/        # Registry blob storage
+    │   │   ├── logs/           # Quay logs
+    │   │   └── run/            # Runtime files (locks, etc.)
+    │   └── clair/              # Clair data
+    └── config/
+        ├── quay/
+        │   └── stack/config.yaml   # Quay configuration
+        ├── clair/
+        │   └── config.yaml     # Clair configuration
+        └── credentials/
+            ├── db_password     # Postgres password
+            ├── quay_secret     # Quay secret key
+            ├── clair_db_password   # Clair DB password
+            ├── cosign.key      # Cosign private key
+            └── cosign.pub      # Cosign public key
+```
 
-/var/lib/quay/
-├── config/stack/config.yaml    # Quay configuration
-├── credentials/
-│   ├── db_password             # Postgres password
-│   ├── quay_secret             # Quay secret key
-│   ├── clair_db_password       # Clair DB password
-│   ├── cosign.key              # Cosign private key
-│   └── cosign.pub              # Cosign public key
-├── clair-config/config.yaml    # Clair configuration
-├── init-db/                    # Postgres init scripts
-├── storage/                    # Registry blob storage
-├── logs/                       # Quay logs
-└── postgres/                   # Postgres data
+To backup all Quay data:
+```sh
+tar -czf quay-backup.tar.gz /opt/quay/rootfs
 ```
 
 ---
@@ -235,7 +250,7 @@ Check SELinux context and file permissions on data directories.
 ```sh
 cd /opt/quay
 docker compose down -v
-rm -rf /opt/quay /var/lib/quay /var/lib/postgres /var/lib/redis /var/lib/clair
+rm -rf /opt/quay
 ```
 
 ---

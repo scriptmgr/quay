@@ -25,24 +25,38 @@ have() { command -v "$1" >/dev/null 2>&1; }
 
 ### --- constants / paths ---
 OPT_ROOT="/opt/quay"
-DATA_DIR="/var/lib/quay"
-PG_DIR="/var/lib/postgres"
-REDIS_DIR="/var/lib/redis"
-CLAIR_DIR="/var/lib/clair"
-ENV_FILE="${OPT_ROOT}/.env"
-CREDS_DIR="${DATA_DIR}/credentials"
-LOG_DIR="${DATA_DIR}/logs"
-STORAGE_DIR="${DATA_DIR}/storage"
-CONFIG_DIR="${DATA_DIR}/config"
+ROOTFS="${OPT_ROOT}/rootfs"
+
+# Database directories
+PG_DIR="${ROOTFS}/db/postgres"
+REDIS_DIR="${ROOTFS}/db/redis"
+
+# Service data directories
+QUAY_DATA_DIR="${ROOTFS}/data/quay"
+CLAIR_DATA_DIR="${ROOTFS}/data/clair"
+LOG_DIR="${QUAY_DATA_DIR}/logs"
+STORAGE_DIR="${QUAY_DATA_DIR}/storage"
+RUN_DIR="${QUAY_DATA_DIR}/run"
+
+# Configuration directories
+CONFIG_DIR="${ROOTFS}/config/quay"
+CLAIR_CONF_DIR="${ROOTFS}/config/clair"
+CREDS_DIR="${ROOTFS}/config/credentials"
+
+# Other paths
 BIN_DIR="${OPT_ROOT}/bin"
+ENV_FILE="${OPT_ROOT}/.env"
 COMPOSE_FILE="${OPT_ROOT}/docker-compose.yml"
-GC_LOCK="${DATA_DIR}/run/gc.lock"
-GC_FLAG_FIRST="${DATA_DIR}/run/gc-first-run"
-RUN_DIR="${DATA_DIR}/run"
+GC_LOCK="${RUN_DIR}/gc.lock"
+GC_FLAG_FIRST="${RUN_DIR}/gc-first-run"
+
+# Legacy compatibility
+DATA_DIR="${QUAY_DATA_DIR}"
+CLAIR_DIR="${CLAIR_DATA_DIR}"
 
 # Ensure base dirs
-mkdir -p "$OPT_ROOT" "$BIN_DIR" "$CONFIG_DIR" "$CREDS_DIR" "$LOG_DIR" "$STORAGE_DIR" "$PG_DIR" "$REDIS_DIR" "$CLAIR_DIR" "$RUN_DIR"
-chmod 755 "$OPT_ROOT" "$BIN_DIR" "$CONFIG_DIR" "$LOG_DIR" "$STORAGE_DIR" "$PG_DIR" "$REDIS_DIR" "$CLAIR_DIR" "$RUN_DIR"
+mkdir -p "$OPT_ROOT" "$BIN_DIR" "$PG_DIR" "$REDIS_DIR" "$QUAY_DATA_DIR" "$CLAIR_DATA_DIR" "$LOG_DIR" "$STORAGE_DIR" "$RUN_DIR" "$CONFIG_DIR" "$CLAIR_CONF_DIR" "$CREDS_DIR"
+chmod 755 "$OPT_ROOT" "$BIN_DIR" "$PG_DIR" "$REDIS_DIR" "$QUAY_DATA_DIR" "$CLAIR_DATA_DIR" "$LOG_DIR" "$STORAGE_DIR" "$RUN_DIR" "$CONFIG_DIR" "$CLAIR_CONF_DIR"
 chmod 700 "$CREDS_DIR"
 
 ### --- preflight checks ---
@@ -442,9 +456,6 @@ mv "$COMPOSE_FILE.tmp" "$COMPOSE_FILE"
 chmod 644 "$COMPOSE_FILE"
 
 ### --- Clair config (minimal v4) ---
-CLAIR_CONF_DIR="${DATA_DIR}/clair-config"
-mkdir -p "$CLAIR_CONF_DIR"
-chmod 755 "$CLAIR_CONF_DIR"
 cat >"${CLAIR_CONF_DIR}/config.yaml.tmp" <<EOF
 http_listen_addr: :6060
 introspection_addr: :6061
@@ -495,7 +506,8 @@ cat >"$GC_WRAPPER.tmp" <<'EOS'
 set -eu
 umask 077
 
-DATA_DIR="/var/lib/quay"
+OPT_ROOT="/opt/quay"
+DATA_DIR="${OPT_ROOT}/rootfs/data/quay"
 ENV_FILE="${OPT_ROOT}/.env"
 GC_LOCK="${DATA_DIR}/run/gc.lock"
 GC_FLAG_FIRST="${DATA_DIR}/run/gc-first-run"
