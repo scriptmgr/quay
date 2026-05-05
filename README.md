@@ -84,14 +84,14 @@ The installer will:
 
 ### Directory Structure
 
-All data is stored under `/opt/quay/rootfs/` for easy backup:
+All data is stored under `/opt/quay/volumes/` for easy backup:
 
 ```
 /opt/quay/
 ├── docker-compose.yml
 ├── .env
 ├── bin/                        # Helper scripts (GC, etc.)
-└── rootfs/
+└── volumes/
     ├── db/
     │   ├── postgres/           # Postgres data
     │   └── redis/              # Redis data
@@ -116,7 +116,7 @@ All data is stored under `/opt/quay/rootfs/` for easy backup:
 
 To backup all Quay data:
 ```sh
-tar -czf quay-backup.tar.gz /opt/quay/rootfs
+tar -czf quay-backup.tar.gz /opt/quay/volumes
 ```
 
 ---
