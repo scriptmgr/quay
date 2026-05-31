@@ -1,5 +1,6 @@
 #!/bin/sh
 # install.sh — Self-hosted Quay stack (Quay + Postgres + Redis + Clair) with Cosign + Syft
+##@Version 202605310000
 # - Pure POSIX sh, idempotent, distro-agnostic
 # - Docker Compose stack, reverse proxy handled externally
 # - Binds Quay on 172.17.0.1:<random 64xxx> (persisted)
@@ -12,16 +13,18 @@
 set -eu
 umask 077
 
-### --- tiny utils (POSIX) ---
-ts() { date +"%Y-%m-%d %H:%M:%S"; }
-info() { printf '%s %s\n' "$(ts)" "$*"; }
-warn() { printf '%s %s\n' "$(ts)" "WARN: $*"; }
-fail() { printf '%s %s\n' "$(ts)" "ERROR: $*" >&2; exit 1; }
+VERSION="202605310000"
 
-need() { command -v "$1" >/dev/null 2>&1 || fail "Missing required command: $1"; }
+### --- tiny utils (POSIX) ---
+__ts() { date +"%Y-%m-%d %H:%M:%S"; }
+__info() { printf '%s %s\n' "$(__ts)" "$*"; }
+__warn() { printf '%s %s\n' "$(__ts)" "WARN: $*"; }
+__fail() { printf '%s %s\n' "$(__ts)" "ERROR: $*" >&2; exit 1; }
+
+__need() { command -v "$1" >/dev/null 2>&1 || __fail "Missing required command: $1"; }
 
 # Try a command; if it exists, echo it and return 0
-have() { command -v "$1" >/dev/null 2>&1; }
+__have() { command -v "$1" >/dev/null 2>&1; }
 
 ### --- constants / paths ---
 OPT_ROOT="/opt/quay"
@@ -60,34 +63,34 @@ chmod 755 "$OPT_ROOT" "$BIN_DIR" "$PG_DIR" "$REDIS_DIR" "$QUAY_DATA_DIR" "$CLAIR
 chmod 700 "$CREDS_DIR"
 
 ### --- preflight checks ---
-need sh
-need awk
-need sed
-need grep
-need tr
-need dd
-need curl
+__need sh
+__need awk
+__need sed
+__need grep
+__need tr
+__need dd
+__need curl
 
 # Docker + Compose
-if have docker; then
+if __have docker; then
   if docker compose version >/dev/null 2>&1; then
     COMPOSE="docker compose"
-  elif have docker-compose; then
+  elif __have docker-compose; then
     COMPOSE="docker-compose"
   else
-    fail "Docker Compose not found (plugin or docker-compose). Install it and re-run."
+    __fail "Docker Compose not found (plugin or docker-compose). Install it and re-run."
   fi
 else
   # Try podman+podman-compose as a fallback only if docker missing
-  if have podman && have podman-compose; then
+  if __have podman && __have podman-compose; then
     COMPOSE="podman-compose"
   else
-    fail "Neither docker nor podman(+podman-compose) is installed. Install container engine + compose and re-run."
+    __fail "Neither docker nor podman(+podman-compose) is installed. Install container engine + compose and re-run."
   fi
 fi
 
 ### --- helper: read or generate file-secret ---
-ensure_secret_file() {
+__ensure_secret_file() {
   # $1 = path, $2 = optional length (default 24)
   f="$1"; len="${2:-24}"
   if [ ! -s "$f" ]; then
@@ -98,10 +101,10 @@ ensure_secret_file() {
 }
 
 ### --- DOMAIN resolution & validation ---
-is_valid_reg_domain() {
+__is_valid_reg_domain() {
   dom="$1"
   # Must contain at least one dot and only LDH chars
-  echo "$dom" | grep -Eq '^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$' || return 1
+  echo "$dom" | grep -E -- '^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$' >/dev/null 2>&1 || return 1
   # Disallow obvious non-registerable TLDs
   case "$dom" in
     *.local|*.lan|*.home|*.invalid|*.test|localhost|localhost.*) return 1 ;;
@@ -128,14 +131,14 @@ else
     DOM_CAND="$(hostname -f 2>/dev/null || echo "${HOST_SHORT}.localdomain")"
   fi
 fi
-is_valid_reg_domain "$DOM_CAND" || fail "DOMAIN must be a valid registerable domain (e.g. example.com). Set DOMAIN in ${ENV_FILE} and re-run."
+__is_valid_reg_domain "$DOM_CAND" || __fail "DOMAIN must be a valid registerable domain (e.g. example.com). Set DOMAIN in ${ENV_FILE} and re-run."
 
 DOMAIN="$DOM_CAND"
 
 ### --- SMTP probe (host bridge IP discovery + check) ---
 # Discover container bridge IP (default 172.17.0.1)
 BRIDGE_IP="172.17.0.1"
-if have ip; then
+if __have ip; then
   # Try docker0 first, then podman's cni-podman0 or any bridge
   for iface in docker0 cni-podman0 podman0 br0; do
     DI=$(ip -4 addr show "$iface" 2>/dev/null | awk '/inet /{print $2}' | awk -F/ '{print $1}')
@@ -151,18 +154,18 @@ if curl --silent --connect-timeout 3 "smtp://${SMTP_HOST}:${SMTP_PORT}/" >/dev/n
 fi
 
 ### --- persistent random high port (64xxx) on 172.17.x.x ---
-rand64k() {
+__rand64k() {
   # returns integer between 64000 and 64999
   # prefer awk random seeded by pid+time
   awk 'BEGIN{srand(); printf("%d\n", 64000+int(rand()*1000))}'
 }
-port_in_use() {
+__port_in_use() {
   P="$1"
   # check tcp listeners on host
-  if have ss; then
-    ss -ltn 2>/dev/null | awk '{print $4}' | grep -q ":$P\$" && return 0 || return 1
-  elif have netstat; then
-    netstat -ltn 2>/dev/null | awk '{print $4}' | grep -q ":$P\$" && return 0 || return 1
+  if __have ss; then
+    ss -ltn 2>/dev/null | awk '{print $4}' | grep -q -- ":$P\$" && return 0 || return 1
+  elif __have netstat; then
+    netstat -ltn 2>/dev/null | awk '{print $4}' | grep -q -- ":$P\$" && return 0 || return 1
   else
     # Fallback: attempt connect quickly
     (exec 3<>"/dev/tcp/${BRIDGE_IP}/${P}") >/dev/null 2>&1 && { exec 3>&- 3<&-; return 0; } || return 1
@@ -171,68 +174,70 @@ port_in_use() {
 # Load QUAY_PORT from .env if present and usable; else pick a free one and persist
 if [ "${QUAY_BIND_ADDR:-}" ]; then :; else
   # Use BRIDGE_IP only if it exists as a local interface, otherwise 0.0.0.0
-  if have ip && ip addr show 2>/dev/null | grep -q "inet $BRIDGE_IP/"; then
+  if __have ip && ip addr show 2>/dev/null | grep -q -- "inet $BRIDGE_IP/"; then
     QUAY_BIND_ADDR="$BRIDGE_IP"
   else
     QUAY_BIND_ADDR="0.0.0.0"
   fi
 fi
 if [ "${QUAY_PORT:-}" ]; then
-  if port_in_use "$QUAY_PORT"; then
+  if __port_in_use "$QUAY_PORT"; then
     # If it's in use we try to detect if it's our compose later; otherwise reassign
-    : # keep for now; compose will reuse mapping
+    # Keep for now; compose will reuse the existing mapping
+    :
   else
-    : # free, good
+    # Port is free; nothing to do
+    :
   fi
 else
   i=0
   while : ; do
     i=$((i+1))
-    CAND="$(rand64k)"
-    if ! port_in_use "$CAND"; then
+    CAND="$(__rand64k)"
+    if ! __port_in_use "$CAND"; then
       QUAY_PORT="$CAND"
       break
     fi
-    [ "$i" -gt 200 ] && fail "Could not find a free port in 64000-64999 after 200 attempts."
+    [ "$i" -gt 200 ] && __fail "Could not find a free port in 64000-64999 after 200 attempts."
   done
 fi
 
 ### --- superuser + secrets (files only) ---
 QUAY_SUPERUSER="${QUAY_SUPERUSER:-administrator}"
 SUPERFILE="${CREDS_DIR}/superuser"
-ensure_secret_file "$SUPERFILE" 24
+__ensure_secret_file "$SUPERFILE" 24
 QUAY_SUPERPASS_FILE="$SUPERFILE"
 
 QUAY_SECRET_FILE="${CREDS_DIR}/quay.secret"
-ensure_secret_file "$QUAY_SECRET_FILE" 48
+__ensure_secret_file "$QUAY_SECRET_FILE" 48
 
 DB_USER="${DB_USER:-quay}"
-DB_PASS_FILE="${CREDS_DIR}/db.pass"; ensure_secret_file "$DB_PASS_FILE" 24
+DB_PASS_FILE="${CREDS_DIR}/db.pass"; __ensure_secret_file "$DB_PASS_FILE" 24
 CLAIR_DB_USER="${CLAIR_DB_USER:-clair}"
-CLAIR_DB_PASS_FILE="${CREDS_DIR}/clair-db.pass"; ensure_secret_file "$CLAIR_DB_PASS_FILE" 24
+CLAIR_DB_PASS_FILE="${CREDS_DIR}/clair-db.pass"; __ensure_secret_file "$CLAIR_DB_PASS_FILE" 24
 
 # Cosign keys (generate if missing). Prefer openssl ed25519.
 COSIGN_KEY_FILE="${COSIGN_KEY_FILE:-${CREDS_DIR}/cosign.key}"
 COSIGN_PUB_FILE="${COSIGN_PUB_FILE:-${CREDS_DIR}/cosign.pub}"
 if [ ! -s "$COSIGN_KEY_FILE" ] || [ ! -s "$COSIGN_PUB_FILE" ]; then
-  if have openssl; then
-    openssl genpkey -algorithm ed25519 -out "$COSIGN_KEY_FILE" >/dev/null 2>&1 || fail "openssl keygen failed"
+  if __have openssl; then
+    openssl genpkey -algorithm ed25519 -out "$COSIGN_KEY_FILE" >/dev/null 2>&1 || __fail "openssl keygen failed"
     chmod 600 "$COSIGN_KEY_FILE"
-    openssl pkey -in "$COSIGN_KEY_FILE" -pubout -out "$COSIGN_PUB_FILE" >/dev/null 2>&1 || fail "openssl pubout failed"
+    openssl pkey -in "$COSIGN_KEY_FILE" -pubout -out "$COSIGN_PUB_FILE" >/dev/null 2>&1 || __fail "openssl pubout failed"
   else
-    warn "OpenSSL not found; attempting cosign container keygen"
+    __warn "OpenSSL not found; attempting cosign container keygen"
     # This does not print secrets; keys written to mounted dir
     $COMPOSE pull cosign >/dev/null 2>&1 || true
-    $COMPOSE run --rm cosign sh -c "COSIGN_PASSWORD= printf '' && cosign generate-key-pair --yes --outfile /keys/cosign >/dev/null 2>&1" || fail "cosign keygen failed"
-    [ -s "$COSIGN_KEY_FILE" ] && chmod 600 "$COSIGN_KEY_FILE" || fail "cosign key not created"
+    $COMPOSE run --rm cosign sh -c "COSIGN_PASSWORD= printf '' && cosign generate-key-pair --yes --outfile /keys/cosign >/dev/null 2>&1" || __fail "cosign keygen failed"
+    [ -s "$COSIGN_KEY_FILE" ] && chmod 600 "$COSIGN_KEY_FILE" || __fail "cosign key not created"
   fi
 fi
 
 ### --- persist .env (non-secret values + secret file paths) ---
-persist_kv() {
+__persist_kv() {
   k="$1"; v="$2"
   if [ ! -f "$ENV_FILE" ]; then : >"$ENV_FILE"; chmod 600 "$ENV_FILE"; fi
-  if grep -q "^$k=" "$ENV_FILE" 2>/dev/null; then
+  if grep -q -- "^$k=" "$ENV_FILE" 2>/dev/null; then
     # update in place
     sed -i "s|^$k=.*|$k=$v|" "$ENV_FILE" 2>/dev/null || {
       # macOS/BSD sed fallback (no -i)
@@ -242,35 +247,37 @@ persist_kv() {
     printf '%s=%s\n' "$k" "$v" >>"$ENV_FILE"
   fi
 }
-persist_kv "DOMAIN" "$DOMAIN"
-persist_kv "QUAY_BIND_ADDR" "$QUAY_BIND_ADDR"
-persist_kv "QUAY_PORT" "$QUAY_PORT"
-persist_kv "DATA_DIR" "$DATA_DIR"
-persist_kv "POSTGRES_DIR" "$PG_DIR"
-persist_kv "REDIS_DIR" "$REDIS_DIR"
-persist_kv "CLAIR_DIR" "$CLAIR_DIR"
-persist_kv "QUAY_SUPERUSER" "$QUAY_SUPERUSER"
-persist_kv "QUAY_SUPERPASS_FILE" "$QUAY_SUPERPASS_FILE"
-persist_kv "QUAY_SECRET_KEY_FILE" "$QUAY_SECRET_FILE"
-persist_kv "DB_USER" "$DB_USER"
-persist_kv "DB_PASS_FILE" "$DB_PASS_FILE"
-persist_kv "DB_NAME" "quay"
-persist_kv "DB_HOST" "postgres"
-persist_kv "DB_PORT" "5432"
-persist_kv "CLAIR_DB_USER" "$CLAIR_DB_USER"
-persist_kv "CLAIR_DB_PASS_FILE" "$CLAIR_DB_PASS_FILE"
-persist_kv "COSIGN_KEY_FILE" "$COSIGN_KEY_FILE"
-persist_kv "COSIGN_PUB_FILE" "$COSIGN_PUB_FILE"
-persist_kv "FEATURE_USER_CREATION" "true"
-persist_kv "FEATURE_ANONYMOUS_ACCESS" "true"
+__persist_kv "DOMAIN" "$DOMAIN"
+__persist_kv "QUAY_BIND_ADDR" "$QUAY_BIND_ADDR"
+__persist_kv "QUAY_PORT" "$QUAY_PORT"
+__persist_kv "DATA_DIR" "$DATA_DIR"
+__persist_kv "POSTGRES_DIR" "$PG_DIR"
+__persist_kv "REDIS_DIR" "$REDIS_DIR"
+__persist_kv "CLAIR_DIR" "$CLAIR_DIR"
+__persist_kv "QUAY_SUPERUSER" "$QUAY_SUPERUSER"
+__persist_kv "QUAY_SUPERPASS_FILE" "$QUAY_SUPERPASS_FILE"
+__persist_kv "QUAY_SECRET_KEY_FILE" "$QUAY_SECRET_FILE"
+__persist_kv "DB_USER" "$DB_USER"
+__persist_kv "DB_PASS_FILE" "$DB_PASS_FILE"
+__persist_kv "DB_NAME" "quay"
+__persist_kv "DB_HOST" "postgres"
+__persist_kv "DB_PORT" "5432"
+__persist_kv "CLAIR_DB_USER" "$CLAIR_DB_USER"
+__persist_kv "CLAIR_DB_PASS_FILE" "$CLAIR_DB_PASS_FILE"
+__persist_kv "COSIGN_KEY_FILE" "$COSIGN_KEY_FILE"
+__persist_kv "COSIGN_PUB_FILE" "$COSIGN_PUB_FILE"
+__persist_kv "STACK_DIR" "$STACK_DIR"
+__persist_kv "CLAIR_CONF_DIR" "$CLAIR_CONF_DIR"
+__persist_kv "FEATURE_USER_CREATION" "true"
+__persist_kv "FEATURE_ANONYMOUS_ACCESS" "true"
 if [ "$SMTP_ENABLED" = "true" ]; then
-  persist_kv "FEATURE_REQUIRE_EMAIL_VERIFICATION" "true"
+  __persist_kv "FEATURE_REQUIRE_EMAIL_VERIFICATION" "true"
 else
-  persist_kv "FEATURE_REQUIRE_EMAIL_VERIFICATION" "false"
+  __persist_kv "FEATURE_REQUIRE_EMAIL_VERIFICATION" "false"
 fi
-persist_kv "PREFERRED_URL_SCHEME" "https"
-persist_kv "EXTERNAL_TLS_TERMINATION" "true"
-persist_kv "SERVER_HOSTNAME" "$DOMAIN"
+__persist_kv "PREFERRED_URL_SCHEME" "https"
+__persist_kv "EXTERNAL_TLS_TERMINATION" "true"
+__persist_kv "SERVER_HOSTNAME" "$DOMAIN"
 
 ### --- render Quay config.yaml (non-destructive: create-if-missing, else patch keys) ---
 # Quay expects config in stack subdirectory
@@ -278,7 +285,7 @@ STACK_DIR="${CONFIG_DIR}/stack"
 mkdir -p "$STACK_DIR"
 chmod 755 "$STACK_DIR"
 CFG="${STACK_DIR}/config.yaml"
-write_cfg() {
+__write_cfg() {
 cat >"$CFG.tmp" <<EOF
 SERVER_HOSTNAME: ${DOMAIN}
 PREFERRED_URL_SCHEME: https
@@ -333,11 +340,11 @@ USER_EVENTS_REDIS:
 
 EOF
 mv "$CFG.tmp" "$CFG"
-chmod 644 "$CFG"
+chmod 600 "$CFG"
 }
 
 if [ ! -f "$CFG" ]; then
-  write_cfg
+  __write_cfg
 else
   # Basic key patching (keep simple & safe)
   # If you later need to change, edit ${CFG} manually; reruns won't clobber.
@@ -410,7 +417,7 @@ services:
       - CLAIR_CONF=/clair-config/config.yaml
     volumes:
       - ${CLAIR_DIR}:/clairdata:z
-      - ${DATA_DIR}/clair-config:/clair-config:z
+      - ${CLAIR_CONF_DIR}:/clair-config:z
     networks: [quay]
 
   quay:
@@ -421,7 +428,7 @@ services:
     ports:
       - ${QUAY_BIND_ADDR}:${QUAY_PORT}:8080
     volumes:
-      - ${DATA_DIR}/config/stack:/quay-registry/conf/stack:z
+      - ${STACK_DIR}:/quay-registry/conf/stack:z
       - ${DATA_DIR}/logs:/var/log/quay:z
       - ${DATA_DIR}/storage:/datastorage/registry:z
     networks: [quay]
@@ -473,12 +480,12 @@ mv "${CLAIR_CONF_DIR}/config.yaml.tmp" "${CLAIR_CONF_DIR}/config.yaml"
 chmod 644 "${CLAIR_CONF_DIR}/config.yaml"
 
 ### --- bring up stack ---
-info "Pulling container images (this may take a bit)…"
+__info "Pulling container images (this may take a bit)…"
 $COMPOSE -f "$COMPOSE_FILE" pull 2>&1 | grep -v "Pulling\|Already exists\|Download complete\|Pull complete" || true
 
-info "Starting Quay stack…"
+__info "Starting Quay stack…"
 if ! $COMPOSE -f "$COMPOSE_FILE" up -d 2>&1; then
-  fail "Failed to start Quay stack"
+  __fail "Failed to start Quay stack"
 fi
 
 ### --- health checks (bounded retries, minimal output) ---
@@ -492,7 +499,7 @@ while [ $TRIES -gt 0 ]; do
   TRIES=$((TRIES-1))
   sleep 2
 done
-[ "$HEALTH_OK" -eq 1 ] || warn "Quay health endpoint not responding yet; continuing."
+[ "$HEALTH_OK" -eq 1 ] || __warn "Quay health endpoint not responding yet; continuing."
 
 # record first-run flag for GC (dry-run on first execution)
 if [ ! -f "$GC_FLAG_FIRST" ]; then
@@ -523,7 +530,7 @@ curl -fsS "http://${QUAY_BIND_ADDR}:${QUAY_PORT}/health/instance" >/dev/null 2>&
 ( umask 077; mkdir -p "${DATA_DIR}/run" )
 if [ -f "$GC_LOCK" ]; then
   # stale lock older than 2h? remove
-  find "$(dirname "$GC_LOCK")" -maxdepth 1 -name "$(basename "$GC_LOCK")" -mmin +120 -exec rm -f {} \; >/dev/null 2>&1 || true
+  find "${GC_LOCK%/*}" -maxdepth 1 -name "${GC_LOCK##*/}" -mmin +120 -exec rm -f {} \; >/dev/null 2>&1 || true
 fi
 if [ -f "$GC_LOCK" ]; then exit 0; fi
 : >"$GC_LOCK"
@@ -536,14 +543,21 @@ if [ -f "$GC_FLAG_FIRST" ]; then DRY="--dry-run"; rm -f "$GC_FLAG_FIRST"; fi
 # Attempt Quay GC via internal manage command (best-effort; silent on failure)
 # Different Quay versions expose different GC commands; we try a few, quiet output.
 if command -v docker >/dev/null 2>&1; then
-  DC="docker compose"
-  if ! docker compose version >/dev/null 2>&1; then
-    if command -v docker-compose >/dev/null 2>&1; then DC="docker-compose"; fi
+  if docker compose version >/dev/null 2>&1; then
+    DC="docker compose"
+  elif command -v docker-compose >/dev/null 2>&1; then
+    DC="docker-compose"
+  else
+    log "Docker Compose not found; skipping GC exec"; exit 0
   fi
-  # Try exec forms; ignore output, keep silent
-  $DC -f /opt/quay/docker-compose.yml exec -T quay sh -c 'quay garbage-collect --delete 2>/dev/null || true' >/dev/null 2>&1 || true
-  $DC -f /opt/quay/docker-compose.yml exec -T quay sh -c 'quay manage gc 2>/dev/null || true' >/dev/null 2>&1 || true
+elif command -v podman >/dev/null 2>&1 && command -v podman-compose >/dev/null 2>&1; then
+  DC="podman-compose"
+else
+  log "No container engine found; skipping GC exec"; exit 0
 fi
+# Try exec forms; ignore output, keep silent
+$DC -f /opt/quay/docker-compose.yml exec -T quay sh -c 'quay garbage-collect --delete 2>/dev/null || true' >/dev/null 2>&1 || true
+$DC -f /opt/quay/docker-compose.yml exec -T quay sh -c 'quay manage gc 2>/dev/null || true' >/dev/null 2>&1 || true
 
 # Log a terse line; no repo/tag names or secrets
 log "Quay GC completed ${DRY}"
@@ -552,7 +566,7 @@ EOS
 mv "$GC_WRAPPER.tmp" "$GC_WRAPPER"
 chmod 700 "$GC_WRAPPER"
 
-if have systemctl; then
+if __have systemctl; then
   # systemd unit + timer
   cat >/etc/systemd/system/quay-gc.service <<EOF
 [Unit]
