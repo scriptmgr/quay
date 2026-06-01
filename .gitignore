@@ -100,4 +100,10 @@ $RECYCLE.BIN/
 **/*.rewrite.sh
 **/*.refactor.sh
 
+# Quay runtime data — never committed
+volumes/
 
+# Env files with real credentials — never committed; use .env.sample
+.env
+app.env
+default.env
