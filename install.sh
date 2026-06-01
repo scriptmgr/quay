@@ -92,7 +92,7 @@ fi
 ### --- helper: read or generate file-secret ---
 __ensure_secret_file() {
   # $1 = path, $2 = optional length (default 24)
-  f="$1"; len="${2:-24}"
+  local f="$1" len="${2:-24}"
   if [ ! -s "$f" ]; then
     # generate A-Za-z0-9 length=len
     dd if=/dev/urandom bs=1 count=$((len*2)) 2>/dev/null | tr -dc 'A-Za-z0-9' | head -c "$len" >"$f"
@@ -102,7 +102,7 @@ __ensure_secret_file() {
 
 ### --- DOMAIN resolution & validation ---
 __is_valid_reg_domain() {
-  dom="$1"
+  local dom="$1"
   # Must contain at least one dot and only LDH chars
   echo "$dom" | grep -E -- '^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$' >/dev/null 2>&1 || return 1
   # Disallow obvious non-registerable TLDs
@@ -235,7 +235,7 @@ fi
 
 ### --- persist .env (non-secret values + secret file paths) ---
 __persist_kv() {
-  k="$1"; v="$2"
+  local k="$1" v="$2" tmp
   if [ ! -f "$ENV_FILE" ]; then : >"$ENV_FILE"; chmod 600 "$ENV_FILE"; fi
   if grep -q -- "^$k=" "$ENV_FILE" 2>/dev/null; then
     # update in place
@@ -481,7 +481,7 @@ chmod 644 "${CLAIR_CONF_DIR}/config.yaml"
 
 ### --- bring up stack ---
 __info "Pulling container images (this may take a bit)…"
-$COMPOSE -f "$COMPOSE_FILE" pull 2>&1 | grep -v "Pulling\|Already exists\|Download complete\|Pull complete" || true
+$COMPOSE -f "$COMPOSE_FILE" pull 2>&1 | grep -v -- "Pulling\|Already exists\|Download complete\|Pull complete" || true
 
 __info "Starting Quay stack…"
 if ! $COMPOSE -f "$COMPOSE_FILE" up -d 2>&1; then
@@ -603,10 +603,11 @@ else
   chmod 644 "$CRONF"
 fi
 
-### --- final summary (pretty, emojis; only place secrets are shown) ---
+### --- final summary (only place secrets are shown) ---
 SUPERPASS="$(cat "$QUAY_SUPERPASS_FILE")"
 
 printf '\n'
+if [ -z "${NO_COLOR:-}" ]; then
 cat <<EOF
 ✅ Quay is up and running!
 
@@ -615,7 +616,7 @@ cat <<EOF
 🌉 Docker network:     quay (external: false)
 🔒 Cosign key:         ${COSIGN_KEY_FILE}
 🔑 Cosign pub:         ${COSIGN_PUB_FILE}
-🗑️ Garbage collection: ENABLED (daily at 03:00 local)
+🗑️  Garbage collection: ENABLED (daily at 03:00 local)
 
 ===============================
 🔐 SUPERUSER CREDENTIALS
@@ -628,3 +629,28 @@ cat <<EOF
 📝 Next steps:
    👉 Go to https://${DOMAIN} in your browser
 EOF
+else
+cat <<EOF
+Quay is up and running!
+
+Local endpoint:     http://${QUAY_BIND_ADDR}:${QUAY_PORT}
+Email:              verification $( [ "$SMTP_ENABLED" = "true" ] && echo "ENABLED" || echo "DISABLED" ) (SMTP via ${SMTP_HOST}:${SMTP_PORT})
+Docker network:     quay (external: false)
+Cosign key:         ${COSIGN_KEY_FILE}
+Cosign pub:         ${COSIGN_PUB_FILE}
+Garbage collection: ENABLED (daily at 03:00 local)
+
+===============================
+SUPERUSER CREDENTIALS
+===============================
+User:     ${QUAY_SUPERUSER}
+Password: ${SUPERPASS}
+
+Store these credentials securely — they are not saved in logs.
+
+Next steps:
+   Go to https://${DOMAIN} in your browser
+EOF
+fi
+
+# vim: set ft=sh ts=2 sw=2 et :
