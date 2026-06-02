@@ -58,10 +58,10 @@ __random_port() {
 # Return 0 if the given TCP port is already bound on the host
 __port_in_use() {
   local p="$1"
-  if \ss -ltn 2>/dev/null | \awk '{print $4}' | \grep -q -- ":${p}$"; then
+  if \ss -ltn 2>/dev/null | \awk "/:${p}$/ {exit 0}; END {exit 1}"; then
     return 0
   fi
-  if \netstat -ltn 2>/dev/null | \awk '{print $4}' | \grep -q -- ":${p}$"; then
+  if \netstat -ltn 2>/dev/null | \awk "/:${p}$/ {exit 0}; END {exit 1}"; then
     return 0
   fi
   return 1
