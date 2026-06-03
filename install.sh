@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 # shellcheck shell=sh
 # - - - - - - - - - - - - - - - - - - - - - - - - -
-##@Version           :  202606010046-git
+##@Version           :  202606022117-git
 # @@Author           :  Jason Hempstead
 # @@Contact          :  git-admin@casjaysdev.pro
 # @@License          :  MIT or LICENSE.md
@@ -20,7 +20,7 @@
 # - - - - - - - - - - - - - - - - - - - - - - - - -
 # shellcheck disable=SC1001,SC1003,SC2001,SC2003,SC2016,SC2031,SC2090,SC2115,SC2120,SC2155,SC2199,SC2229,SC2317,SC2329,SC3043
 # - - - - - - - - - - - - - - - - - - - - - - - - -
-VERSION="202606010046-git"
+VERSION="202606022117-git"
 APPNAME="${0##*/}"
 # - - - - - - - - - - - - - - - - - - - - - - - - -
 set -e
@@ -58,10 +58,10 @@ __random_port() {
 # Return 0 if the given TCP port is already bound on the host
 __port_in_use() {
   local p="$1"
-  if \ss -ltn 2>/dev/null | \awk "/:${p}$/ {exit 0}; END {exit 1}"; then
+  if \ss -ltn 2>/dev/null | \awk -v p="$p" '$4 ~ (":" p "$") {found=1} END {exit !found}'; then
     return 0
   fi
-  if \netstat -ltn 2>/dev/null | \awk "/:${p}$/ {exit 0}; END {exit 1}"; then
+  if \netstat -ltn 2>/dev/null | \awk -v p="$p" '$4 ~ (":" p "$") {found=1} END {exit !found}'; then
     return 0
   fi
   return 1
@@ -106,6 +106,42 @@ GC_FLAG_FIRST="${QUAY_RUN_DIR}/gc-first-run"
 COSIGN_KEY_FILE="${CREDS_DIR}/cosign.key"
 COSIGN_PUB_FILE="${CREDS_DIR}/cosign.pub"
 # - - - - - - - - - - - - - - - - - - - - - - - - -
+# Usage information
+__help() {
+  cat <<HELP
+Usage: ${APPNAME} [OPTIONS]
+
+Self-hosted Quay registry stack installer.
+Sets up Quay, Postgres, Redis, and Clair under /opt/quay.
+
+Options:
+  -h, --help      Show this help message and exit
+  -v, --version   Show version and exit
+  --no-color      Suppress colored output in the final summary
+
+Environment variables (set before running):
+  DOMAIN              Registry hostname (e.g. registry.example.com)
+  APP_ADMIN_USER      Superuser account created on first run (default: administrator)
+  DB_USER_NAME        Postgres user for the Quay database (default: quay)
+  CLAIR_DB_USER_NAME  Postgres user for the Clair database (default: clair)
+  TZ                  Timezone for all containers (default: America/New_York)
+
+All other values (passwords, secret keys, port) are auto-generated and
+persisted to ${ENV_FILE}.
+HELP
+}
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+# Parse CLI flags
+for _arg in "$@"; do
+  case "$_arg" in
+    -h|--help)    __help; exit 0 ;;
+    -v|--version) __version; exit 0 ;;
+    --no-color)   NO_COLOR=1 ;;
+    *)            __fail "Unknown option: ${_arg}. Use --help for usage." ;;
+  esac
+done
+unset _arg
+# - - - - - - - - - - - - - - - - - - - - - - - - -
 # Print version and ensure OPT_ROOT and BIN_DIR exist before sourcing .env
 __version
 \mkdir -p "$OPT_ROOT" "$BIN_DIR"
@@ -119,7 +155,6 @@ fi
 # Preflight: required commands
 __need sh
 __need awk
-__need sed
 __need grep
 __need tr
 __need dd
@@ -342,10 +377,10 @@ EOSQL
 EOF
 \chmod 755 "${QUAY_INITDB_DIR}/01-init-quay.sh"
 
-cat >"${QUAY_INITDB_DIR}/02-init-clair.sh" <<EOF
+cat >"${QUAY_INITDB_DIR}/02-init-clair.sh" <<'EOF'
 #!/bin/bash
 set -e
-psql -v ON_ERROR_STOP=1 --username "\$POSTGRES_USER" --dbname "\$POSTGRES_DB" <<-EOSQL
+psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-EOSQL
     CREATE USER ${CLAIR_DB_USER_NAME} WITH PASSWORD '${CLAIR_DB_USER_PASS}';
     CREATE DATABASE clair OWNER ${CLAIR_DB_USER_NAME};
     GRANT ALL PRIVILEGES ON DATABASE clair TO ${CLAIR_DB_USER_NAME};
@@ -381,6 +416,8 @@ services:
       POSTGRES_DB: ${DB_CREATE_DATABASE_NAME:-quay}
       POSTGRES_USER: ${DB_USER_NAME:-quay}
       POSTGRES_PASSWORD: ${DB_USER_PASS:-changeme_db_password}
+      CLAIR_DB_USER_NAME: ${CLAIR_DB_USER_NAME:-clair}
+      CLAIR_DB_USER_PASS: ${CLAIR_DB_USER_PASS:-changeme_clair_password}
     volumes:
       - ./volumes/data/db/postgres/quay:/var/lib/postgresql/data:z
       - ./volumes/config/quay/init-db:/docker-entrypoint-initdb.d:ro,z
@@ -480,7 +517,7 @@ cat >"${GC_WRAPPER}.tmp" <<'EOS'
 #!/usr/bin/env sh
 # shellcheck shell=sh
 # - - - - - - - - - - - - - - - - - - - - - - - - -
-##@Version           :  202606010046-git
+##@Version           :  202606022117-git
 # @@Author           :  Jason Hempstead
 # @@Contact          :  git-admin@casjaysdev.pro
 # @@License          :  MIT or LICENSE.md
@@ -499,7 +536,7 @@ cat >"${GC_WRAPPER}.tmp" <<'EOS'
 # - - - - - - - - - - - - - - - - - - - - - - - - -
 # shellcheck disable=SC1001,SC1003,SC2001,SC2003,SC2016,SC2031,SC2090,SC2115,SC2120,SC2155,SC2199,SC2229,SC2317,SC2329,SC3043
 # - - - - - - - - - - - - - - - - - - - - - - - - -
-VERSION="202606010046-git"
+VERSION="202606022117-git"
 APPNAME="${0##*/}"
 # - - - - - - - - - - - - - - - - - - - - - - - - -
 set -e
@@ -607,10 +644,10 @@ $COMPOSE -f "$COMPOSE_FILE" pull 2>&1 | grep -v -- "Pulling\|Already exists\|Dow
 __info "Starting Quay stack…"
 $COMPOSE -f "$COMPOSE_FILE" up -d 2>&1 || __fail "Failed to start Quay stack — check logs: $COMPOSE -f $COMPOSE_FILE logs"
 # - - - - - - - - - - - - - - - - - - - - - - - - -
-# Wait for Quay to become healthy (up to 120 s)
+# Wait for Quay to become healthy (up to 300 s; first boot takes longer due to DB migrations)
 sleep 2
 HEALTH_OK=0
-_tries=60
+_tries=150
 while [ "$_tries" -gt 0 ]; do
   if \curl -fsS "http://${QUAY_BIND_ADDR}:${QUAY_PORT}/health/instance" >/dev/null 2>&1; then
     HEALTH_OK=1
@@ -619,7 +656,7 @@ while [ "$_tries" -gt 0 ]; do
   _tries=$((_tries - 1))
   sleep 2
 done
-[ "$HEALTH_OK" -eq 1 ] || __warn "Quay health endpoint not yet responding; continuing."
+[ "$HEALTH_OK" -eq 1 ] || __warn "Quay health endpoint not yet responding after 300 s. First boot with DB migrations can take longer — check logs: $COMPOSE -f $COMPOSE_FILE logs quay-app"
 # - - - - - - - - - - - - - - - - - - - - - - - - -
 # Drop the first-run flag so GC uses dry-run mode on its initial execution
 if [ ! -f "$GC_FLAG_FIRST" ]; then
@@ -641,15 +678,21 @@ if [ -z "${NO_COLOR:-}" ]; then
 🗑️  Garbage collection: ENABLED (daily at 03:00 local)
 
 ===============================
-🔐 SUPERUSER CREDENTIALS
+🔐 SUPERUSER ACCOUNT
 ===============================
-👤 User:     ${APP_ADMIN_USER}
+👤 Username: ${APP_ADMIN_USER}
 🔑 Password: ${APP_ADMIN_PASS}
+
+⚠️  These credentials are used to REGISTER via the web UI — not pre-created.
+    Navigate to https://${BASE_DOMAIN_NAME} → Create Account, then enter
+    these exact username/password values. The account becomes a superuser
+    automatically because it matches SUPER_USERS in config.yaml.
 
 ⚠️  Store these credentials securely — they are not saved in logs.
 
 📝 Next steps:
    👉 Configure your reverse proxy → https://${BASE_DOMAIN_NAME}
+   👉 Register the superuser account via the web UI (see above)
    👉 Set DOMAIN=${BASE_DOMAIN_NAME} sh ${APPNAME} to update configuration
 EOF
 else
@@ -665,15 +708,21 @@ Cosign pub:         ${COSIGN_PUB_FILE}
 Garbage collection: ENABLED (daily at 03:00 local)
 
 ===============================
-SUPERUSER CREDENTIALS
+SUPERUSER ACCOUNT
 ===============================
-User:     ${APP_ADMIN_USER}
+Username: ${APP_ADMIN_USER}
 Password: ${APP_ADMIN_PASS}
+
+These credentials are used to REGISTER via the web UI -- not pre-created.
+Navigate to https://${BASE_DOMAIN_NAME} -> Create Account, then enter
+these exact username/password values. The account becomes a superuser
+automatically because it matches SUPER_USERS in config.yaml.
 
 Store these credentials securely -- they are not saved in logs.
 
 Next steps:
    Configure your reverse proxy -> https://${BASE_DOMAIN_NAME}
+   Register the superuser account via the web UI (see above)
    Set DOMAIN=${BASE_DOMAIN_NAME} sh ${APPNAME} to update configuration
 EOF
 fi
