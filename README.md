@@ -69,10 +69,10 @@ All runtime data lives under `/opt/quay/volumes/` — the Docker Compose `./volu
     └── config/
         ├── quay/
         │   ├── stack/
-        │   │   └── config.yaml       # Quay configuration (mode 600)
+        │   │   └── config.yaml       # Quay configuration (mode 640, root:root)
         │   └── init-db/              # Postgres first-boot init scripts
         ├── clair/
-        │   └── config.yaml           # Clair configuration (mode 600)
+        │   └── config.yaml           # Clair configuration (mode 640, nobody:nobody)
         └── credentials/              # Cosign keys (mode 700 dir, 600 files)
             ├── cosign.key
             └── cosign.pub

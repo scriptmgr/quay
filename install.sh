@@ -102,7 +102,6 @@ CREDS_DIR="${VOLUMES_DIR}/config/credentials"
 # - - - - - - - - - - - - - - - - - - - - - - - - -
 # GC and cosign paths
 GC_WRAPPER="${BIN_DIR}/quay-gc.sh"
-GC_FLAG_FIRST="${QUAY_RUN_DIR}/gc-first-run"
 COSIGN_KEY_FILE="${CREDS_DIR}/cosign.key"
 COSIGN_PUB_FILE="${CREDS_DIR}/cosign.pub"
 # - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -411,7 +410,7 @@ x-logging: &default-logging
 services:
   quay-db:
     image: docker.io/library/postgres:15-alpine
-    pull_policy: always
+    pull_policy: missing
     container_name: quay-db
     restart: always
     logging: *default-logging
@@ -436,7 +435,7 @@ services:
 
   quay-redis:
     image: docker.io/library/redis:7-alpine
-    pull_policy: always
+    pull_policy: missing
     container_name: quay-redis
     restart: always
     logging: *default-logging
@@ -451,7 +450,7 @@ services:
 
   quay-clair:
     image: quay.io/projectquay/clair:4.8.0
-    pull_policy: always
+    pull_policy: missing
     container_name: quay-clair
     restart: always
     logging: *default-logging
@@ -470,7 +469,7 @@ services:
 
   quay-app:
     image: quay.io/projectquay/quay:3.15.2
-    pull_policy: always
+    pull_policy: missing
     container_name: quay-app
     restart: always
     logging: *default-logging
@@ -555,7 +554,6 @@ OPT_ROOT="/opt/quay"
 ENV_FILE="${OPT_ROOT}/.env"
 VOLUMES_DIR="${OPT_ROOT}/volumes"
 GC_LOCK="${VOLUMES_DIR}/data/quay/run/gc.lock"
-GC_FLAG_FIRST="${VOLUMES_DIR}/data/quay/run/gc-first-run"
 # - - - - - - - - - - - - - - - - - - - - - - - - -
 # Load runtime values (QUAY_BIND_ADDR, QUAY_PORT, etc.)
 # shellcheck disable=SC1090
@@ -563,8 +561,9 @@ GC_FLAG_FIRST="${VOLUMES_DIR}/data/quay/run/gc-first-run"
 # - - - - - - - - - - - - - - - - - - - - - - - - -
 __gc_log() { printf '%s %s\n' "$(date +"%Y-%m-%d %H:%M:%S")" "$*"; }
 # - - - - - - - - - - - - - - - - - - - - - - - - -
-# Exit silently if Quay is not healthy
+# Exit if Quay is not healthy — log the skip so operators can distinguish it from a successful run
 if ! curl -fsS "http://${QUAY_BIND_ADDR:-172.17.0.1}:${QUAY_PORT:-62080}/health/instance" >/dev/null 2>&1; then
+  __gc_log "Quay not healthy — skipping GC"
   exit 0
 fi
 # - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -594,17 +593,10 @@ else
   exit 0
 fi
 # - - - - - - - - - - - - - - - - - - - - - - - - -
-# On first run use dry-run mode; clear the flag so subsequent runs are real GC
-DRY=""
-if [ -f "$GC_FLAG_FIRST" ]; then
-  DRY="--dry-run"
-  rm -f "$GC_FLAG_FIRST"
-fi
-# - - - - - - - - - - - - - - - - - - - - - - - - -
 # Attempt Quay GC via internal manage commands (best-effort; silent on failure)
 $DC -f /opt/quay/docker-compose.yml exec -T quay-app sh -c 'quay garbage-collect --delete 2>/dev/null || true' >/dev/null 2>&1 || true
 $DC -f /opt/quay/docker-compose.yml exec -T quay-app sh -c 'quay manage gc 2>/dev/null || true' >/dev/null 2>&1 || true
-__gc_log "Quay GC completed ${DRY}"
+__gc_log "Quay GC completed"
 exit 0
 # ex: ts=2 sw=2 et filetype=sh
 EOS
@@ -648,7 +640,7 @@ fi
 # - - - - - - - - - - - - - - - - - - - - - - - - -
 # Pull images and bring up the stack
 __info "Pulling container images (this may take several minutes)…"
-$COMPOSE -f "$COMPOSE_FILE" pull 2>&1 | grep -v -- "Pulling\|Already exists\|Download complete\|Pull complete" || true
+$COMPOSE -f "$COMPOSE_FILE" pull --quiet 2>&1 || true
 
 __info "Starting Quay stack…"
 $COMPOSE -f "$COMPOSE_FILE" up -d 2>&1 || __fail "Failed to start Quay stack — check logs: $COMPOSE -f $COMPOSE_FILE logs"
@@ -665,12 +657,7 @@ while [ "$_tries" -gt 0 ]; do
   _tries=$((_tries - 1))
   sleep 2
 done
-[ "$HEALTH_OK" -eq 1 ] || __warn "Quay health endpoint not yet responding after 300 s. First boot with DB migrations can take longer — check logs: $COMPOSE -f $COMPOSE_FILE logs quay-app"
-# - - - - - - - - - - - - - - - - - - - - - - - - -
-# Drop the first-run flag so GC uses dry-run mode on its initial execution
-if [ ! -f "$GC_FLAG_FIRST" ]; then
-  : >"$GC_FLAG_FIRST"
-fi
+[ "$HEALTH_OK" -eq 1 ] || __fail "Quay did not become healthy within 300 s. Check logs: $COMPOSE -f $COMPOSE_FILE logs quay-app"
 # - - - - - - - - - - - - - - - - - - - - - - - - -
 # Final summary — only place credentials are printed; never logged
 printf '\n'
