@@ -299,7 +299,13 @@ _env_tmp="${ENV_FILE}.tmp.$$"
   "$QUAY_INITDB_DIR" \
   "$CLAIR_CONF_DIR" \
   "$CREDS_DIR"
+# chmod intermediate dirs too — umask 077 leaves them 700 without explicit fix
 \chmod 755 \
+  "$VOLUMES_DIR" \
+  "${VOLUMES_DIR}/data" \
+  "${VOLUMES_DIR}/data/db" \
+  "${VOLUMES_DIR}/config" \
+  "${VOLUMES_DIR}/config/quay" \
   "$PG_DATA_DIR" \
   "$REDIS_DATA_DIR" \
   "$QUAY_DATA_DIR" \
@@ -364,7 +370,8 @@ USER_EVENTS_REDIS:
   port: 6379
 EOF
   \mv "${CFG}.tmp" "$CFG"
-  \chmod 600 "$CFG"
+  # 640: Quay runs as GID 0 (root group) so group-read is sufficient; not world-readable
+  \chmod 640 "$CFG"
 fi
 # - - - - - - - - - - - - - - - - - - - - - - - - -
 # Write postgres init scripts — run by postgres only on first-boot (empty data dir)
@@ -509,7 +516,9 @@ notifier:
   migrations: true
 EOF
 \mv "${CLAIR_CONF_DIR}/config.yaml.tmp" "${CLAIR_CONF_DIR}/config.yaml"
-\chmod 600 "${CLAIR_CONF_DIR}/config.yaml"
+# Clair runs as UID/GID 65534 (nobody); chown so group-read is sufficient
+\chown 65534:65534 "${CLAIR_CONF_DIR}/config.yaml"
+\chmod 640 "${CLAIR_CONF_DIR}/config.yaml"
 # - - - - - - - - - - - - - - - - - - - - - - - - -
 # Write GC wrapper script — sources .env at runtime for QUAY_BIND_ADDR and QUAY_PORT
 __info "Writing ${GC_WRAPPER}"
