@@ -152,6 +152,8 @@ __version
 if [ -f "$ENV_FILE" ]; then
   # shellcheck disable=SC1090
   . "$ENV_FILE"
+  # SMTP_ENABLED is re-probed every run — never loaded from .env
+  unset SMTP_ENABLED
 fi
 # - - - - - - - - - - - - - - - - - - - - - - - - -
 # Preflight: required commands
@@ -281,7 +283,6 @@ _env_tmp="${ENV_FILE}.tmp.$$"
   printf 'QUAY_PORT=%s\n' "$QUAY_PORT"
   printf 'SMTP_HOST=%s\n' "$SMTP_HOST"
   printf 'SMTP_PORT=%s\n' "$SMTP_PORT"
-  printf 'SMTP_ENABLED=%s\n' "$SMTP_ENABLED"
   printf 'DB_USER_NAME=%s\n' "$DB_USER_NAME"
   printf 'DB_CREATE_DATABASE_NAME=%s\n' "$DB_CREATE_DATABASE_NAME"
   printf 'DB_USER_PASS=%s\n' "$DB_USER_PASS"
