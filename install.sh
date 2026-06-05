@@ -122,6 +122,8 @@ Options:
 Environment variables (set before running):
   DOMAIN              Registry hostname (e.g. registry.example.com)
   APP_ADMIN_USER      Superuser account created on first run (default: administrator)
+  REGISTRY_TITLE      Full display name shown in the UI (default: Quay)
+  REGISTRY_TITLE_SHORT  Short name shown in the browser tab (default: Quay)
   DB_USER_NAME        Postgres user for the Quay database (default: quay)
   CLAIR_DB_USER_NAME  Postgres user for the Clair database (default: clair)
   TZ                  Timezone for all containers (default: America/New_York)
@@ -243,6 +245,8 @@ DB_USER_NAME="${DB_USER_NAME:-quay}"
 DB_CREATE_DATABASE_NAME="${DB_CREATE_DATABASE_NAME:-quay}"
 CLAIR_DB_USER_NAME="${CLAIR_DB_USER_NAME:-clair}"
 APP_ADMIN_USER="${APP_ADMIN_USER:-administrator}"
+REGISTRY_TITLE="${REGISTRY_TITLE:-Quay}"
+REGISTRY_TITLE_SHORT="${REGISTRY_TITLE_SHORT:-${REGISTRY_TITLE}}"
 # Generate secrets only on first run (values are blank when .env is absent)
 if [ -z "${DB_USER_PASS:-}" ]; then DB_USER_PASS="$(__gen_secret 24)"; fi
 if [ -z "${CLAIR_DB_USER_PASS:-}" ]; then CLAIR_DB_USER_PASS="$(__gen_secret 24)"; fi
@@ -334,6 +338,9 @@ PREFERRED_URL_SCHEME: https
 EXTERNAL_TLS_TERMINATION: true
 TESTING: false
 SETUP_COMPLETE: true
+
+REGISTRY_TITLE: ${REGISTRY_TITLE}
+REGISTRY_TITLE_SHORT: ${REGISTRY_TITLE_SHORT}
 
 FEATURE_USER_CREATION: true
 FEATURE_USER_CREATION_INVITE_ONLY: false
