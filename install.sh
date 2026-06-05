@@ -247,8 +247,29 @@ TZ="${TZ:-America/New_York}"
 APP_ADMIN_USER="${APP_ADMIN_USER:-administrator}"
 REGISTRY_TITLE="${REGISTRY_TITLE:-Quay}"
 REGISTRY_TITLE_SHORT="${REGISTRY_TITLE_SHORT:-${REGISTRY_TITLE}}"
-QUAY_IMAGE="${QUAY_IMAGE:-quay.io/projectquay/quay:latest}"
-CLAIR_IMAGE="${CLAIR_IMAGE:-quay.io/projectquay/clair:latest}"
+# Resolve Quay and Clair image tags — neither publishes a :latest tag.
+# Try to fetch the highest stable x.y.z release from the registry API;
+# fall back to a known-good pinned version if the fetch fails or is empty.
+if [ -z "${QUAY_IMAGE:-}" ]; then
+  _quay_ver=$(curl -fsSL --connect-timeout 5 \
+    "https://quay.io/api/v1/repository/projectquay/quay/tag/?onlyActiveTags=true&limit=100" \
+    2>/dev/null | tr ',' '\n' | grep '"name"' | \
+    sed 's/.*"name":"\([^"]*\)".*/\1/' | \
+    awk -F. 'NF==3 && $1+0==$1 && $2+0==$2 && $3+0==$3' | \
+    sort -t. -k1,1n -k2,2n -k3,3n | tail -1)
+  QUAY_IMAGE="quay.io/projectquay/quay:${_quay_ver:-3.17.2}"
+  unset _quay_ver
+fi
+if [ -z "${CLAIR_IMAGE:-}" ]; then
+  _clair_ver=$(curl -fsSL --connect-timeout 5 \
+    "https://quay.io/api/v1/repository/projectquay/clair/tag/?onlyActiveTags=true&limit=100" \
+    2>/dev/null | tr ',' '\n' | grep '"name"' | \
+    sed 's/.*"name":"\([^"]*\)".*/\1/' | \
+    awk -F. 'NF==3 && $1+0==$1 && $2+0==$2 && $3+0==$3' | \
+    sort -t. -k1,1n -k2,2n -k3,3n | tail -1)
+  CLAIR_IMAGE="quay.io/projectquay/clair:${_clair_ver:-4.9.0}"
+  unset _clair_ver
+fi
 # Generate all secrets and internal identifiers on first run only.
 # DB usernames and the database name are randomized lowercase identifiers —
 # internal implementation details not exposed as user-configurable options.
@@ -715,7 +736,10 @@ fi
 # - - - - - - - - - - - - - - - - - - - - - - - - -
 # Pull images and bring up the stack
 __info "Pulling container images (this may take several minutes)…"
-$COMPOSE -f "$COMPOSE_FILE" pull --quiet 2>&1 || true
+__info "  quay-app : ${QUAY_IMAGE}"
+__info "  quay-clair: ${CLAIR_IMAGE}"
+$COMPOSE -f "$COMPOSE_FILE" pull 2>&1 || \
+  __fail "Image pull failed. Check that QUAY_IMAGE=${QUAY_IMAGE} and CLAIR_IMAGE=${CLAIR_IMAGE} exist and are reachable."
 
 __info "Starting Quay stack…"
 $COMPOSE -f "$COMPOSE_FILE" up -d 2>&1 || __fail "Failed to start Quay stack — check logs: $COMPOSE -f $COMPOSE_FILE logs"
