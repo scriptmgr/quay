@@ -205,16 +205,21 @@ if [ -z "${HOST_IP_4:-}" ]; then
   fi
 fi
 # - - - - - - - - - - - - - - - - - - - - - - - - -
-# Probe SMTP on the host bridge; enable email verification if reachable
-SMTP_HOST="${SMTP_HOST:-${HOST_IP_4}}"
+# Probe SMTP: test localhost (where the MTA binds) then fall back to the
+# Docker bridge IP. SMTP_HOST is always set to the address containers use
+# (172.17.0.1 / HOST_IP_4) so Quay can reach the host MTA.
 SMTP_PORT="${SMTP_PORT:-25}"
 if [ -z "${SMTP_ENABLED:-}" ]; then
-  if \curl --silent --connect-timeout 3 "smtp://${SMTP_HOST}:${SMTP_PORT}/" >/dev/null 2>&1; then
+  # Try 127.0.0.1 first (host loopback), then HOST_IP_4 (docker0 bridge)
+  if \curl --silent --connect-timeout 3 "smtp://127.0.0.1:${SMTP_PORT}/" >/dev/null 2>&1 || \
+     \curl --silent --connect-timeout 3 "smtp://${HOST_IP_4}:${SMTP_PORT}/" >/dev/null 2>&1; then
     SMTP_ENABLED="true"
   else
     SMTP_ENABLED="false"
   fi
 fi
+# Containers always reach the host MTA via HOST_IP_4 regardless of bind address
+SMTP_HOST="${SMTP_HOST:-${HOST_IP_4}}"
 # - - - - - - - - - - - - - - - - - - - - - - - - -
 # Determine bind address for Quay's HTTP port
 if [ -z "${QUAY_BIND_ADDR:-}" ]; then
@@ -331,6 +336,8 @@ SETUP_COMPLETE: true
 FEATURE_USER_CREATION: true
 FEATURE_USER_CREATION_INVITE_ONLY: false
 FEATURE_ANONYMOUS_ACCESS: true
+FEATURE_PUBLIC_CATALOG: true
+CREATE_PRIVATE_REPO_ON_PUSH: false
 FEATURE_REQUIRE_EMAIL_VERIFICATION: ${SMTP_ENABLED}
 
 MAIL_SERVER: ${SMTP_HOST}
@@ -671,7 +678,7 @@ __info "Creating superuser account: ${APP_ADMIN_USER}"
 _acct_new=0
 if \curl -fsS -o /dev/null -X POST "http://${QUAY_BIND_ADDR}:${QUAY_PORT}/api/v1/user/" \
   -H "Content-Type: application/json" \
-  -d "{\"username\":\"${APP_ADMIN_USER}\",\"password\":\"${APP_ADMIN_PASS}\",\"email\":\"admin@${BASE_DOMAIN_NAME}\"}" 2>/dev/null; then
+  -d "{\"username\":\"${APP_ADMIN_USER}\",\"password\":\"${APP_ADMIN_PASS}\",\"email\":\"${APP_ADMIN_USER}@${BASE_DOMAIN_NAME}\"}" 2>/dev/null; then
   _acct_new=1
 fi
 # Mark verified in the DB — covers both first run and idempotent re-runs
