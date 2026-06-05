@@ -8,6 +8,14 @@ Designed to be **distro-agnostic**, **idempotent**, and safe to re-run.
 
 ## 📦 Install
 
+### One-liner
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/scriptmgr/quay/main/install.sh | DOMAIN=registry.example.com sh
+```
+
+### Git clone
+
 ```sh
 git clone https://github.com/scriptmgr/quay
 cd quay
@@ -21,8 +29,9 @@ The installer will:
 3. Generate Quay and Clair configurations
 4. Pull and start all containers via Docker Compose
 5. Wait for Quay's health endpoint to respond
-6. Set up daily garbage collection (systemd timer preferred; cron fallback)
-7. Print superuser credentials — the only time they are displayed
+6. Create and verify the superuser account automatically
+7. Set up daily garbage collection (systemd timer preferred; cron fallback)
+8. Print superuser credentials — the only time they are displayed
 
 ---
 
@@ -36,11 +45,23 @@ Pass these before `sh install.sh` to override defaults:
 |----------|---------|-------------|
 | `DOMAIN` | auto-detected from `hostname` | Registry hostname (e.g. `registry.example.com`) |
 | `APP_ADMIN_USER` | `administrator` | Superuser account created on first run |
+| `REGISTRY_TITLE` | `Quay` | Full display name shown in the UI |
+| `REGISTRY_TITLE_SHORT` | same as `REGISTRY_TITLE` | Short name shown in the browser tab |
 | `DB_USER_NAME` | `quay` | Postgres user for the Quay database |
 | `CLAIR_DB_USER_NAME` | `clair` | Postgres user for the Clair database |
 | `TZ` | `America/New_York` | Timezone for all containers |
 
 All other values (passwords, secret keys, port) are auto-generated and persisted to `/opt/quay/.env`.
+
+### SMTP / Email
+
+The installer probes `127.0.0.1:25` and the Docker bridge IP for a local MTA. If one is found, email verification is enabled automatically and `SMTP_HOST` is set to the address containers can reach (`172.17.0.1` by default).
+
+When SMTP is **disabled**, new users who self-register via the web UI will see an activation email prompt and cannot log in until verified. Use the helper script to unblock them:
+
+```sh
+/opt/quay/bin/quay-verify-user.sh <username>
+```
 
 ### `.env` File
 
@@ -55,7 +76,8 @@ All runtime data lives under `/opt/quay/volumes/` — the Docker Compose `./volu
 ├── .env                              # All credentials and config (mode 600)
 ├── docker-compose.yml                # Generated compose file
 ├── bin/
-│   └── quay-gc.sh                    # Garbage collection wrapper
+│   ├── quay-gc.sh                    # Garbage collection wrapper
+│   └── quay-verify-user.sh           # Manually verify a user account (SMTP-off fix)
 └── volumes/
     ├── data/
     │   ├── db/
@@ -143,7 +165,9 @@ docker tag myimage:latest registry.example.com/administrator/myimage:latest
 docker push registry.example.com/administrator/myimage:latest
 ```
 
-### Pull an Image
+### Pull an Image (Anonymous)
+
+Public images can be pulled without logging in:
 
 ```sh
 docker pull registry.example.com/administrator/myimage:latest
@@ -151,7 +175,7 @@ docker pull registry.example.com/administrator/myimage:latest
 
 ### Web UI
 
-Navigate to `https://registry.example.com`.
+Navigate to `https://registry.example.com`. The public catalog is browsable without logging in. New repositories are created as **public** by default.
 
 ---
 
@@ -183,6 +207,14 @@ docker compose -f /opt/quay/docker-compose.yml logs -f quay-clair
 curl http://172.17.0.1:<port>/health/instance
 ```
 
+### Verify a User Account
+
+When SMTP is disabled, self-registered users are stuck on the activation screen. Unblock them with:
+
+```sh
+/opt/quay/bin/quay-verify-user.sh <username>
+```
+
 ### Re-run Installer
 
 The script is idempotent — re-run to update configurations. Existing secrets and data are preserved:
@@ -190,6 +222,10 @@ The script is idempotent — re-run to update configurations. Existing secrets a
 ```sh
 DOMAIN=registry.example.com sh install.sh
 ```
+
+> **Note:** `config.yaml` is only written on first run to preserve manual edits. To apply
+> new settings (e.g. `REGISTRY_TITLE`), add them to
+> `/opt/quay/volumes/config/quay/stack/config.yaml` and restart.
 
 ---
 
@@ -219,6 +255,14 @@ docker exec quay-db pg_isready
 
 Check SELinux context on the `volumes/` directories. The compose file uses `:z` SELinux relabeling on all bind mounts.
 
+### User stuck on activation email screen
+
+SMTP is disabled and the user's account has not been verified in the database. Run:
+
+```sh
+/opt/quay/bin/quay-verify-user.sh <username>
+```
+
 ---
 
 ## 🗑️ Uninstall
@@ -235,7 +279,7 @@ rm -f /etc/systemd/system/quay-gc.{service,timer} /etc/cron.d/quay-gc
 
 ## 📋 Requirements
 
-- Linux host with: `sh`, `awk`, `sed`, `grep`, `tr`, `dd`, `curl`
+- Linux host with: `sh`, `awk`, `sed`, `grep`, `tr`, `dd`, `curl`, `ss`
 - Docker (with Compose plugin) or Podman + podman-compose
 - Outbound internet access (image pulls, Clair vulnerability database updates)
 - Valid domain name pointing to your host (for TLS via reverse proxy)
