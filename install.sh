@@ -286,7 +286,7 @@ if [ -z "${CLAIR_DB_USER_PASS:-}" ]; then CLAIR_DB_USER_PASS="$(__gen_secret 24)
 if [ -z "${QUAY_SECRET_KEY:-}" ]; then QUAY_SECRET_KEY="$(__gen_secret 48)"; fi
 if [ -z "${APP_ADMIN_PASS:-}" ]; then APP_ADMIN_PASS="$(__gen_secret 24)"; fi
 # - - - - - - - - - - - - - - - - - - - - - - - - -
-# Generate cosign keypair (openssl preferred; falls back to cosign container)
+# Generate cosign keypair — openssl preferred; cosign binary fallback; warn and skip if neither available
 if [ ! -s "$COSIGN_KEY_FILE" ] || [ ! -s "$COSIGN_PUB_FILE" ]; then
   \mkdir -p "$CREDS_DIR"
   \chmod 700 "$CREDS_DIR"
@@ -294,13 +294,16 @@ if [ ! -s "$COSIGN_KEY_FILE" ] || [ ! -s "$COSIGN_PUB_FILE" ]; then
     \openssl genpkey -algorithm ed25519 -out "$COSIGN_KEY_FILE" >/dev/null 2>&1 || __fail "openssl ed25519 keygen failed"
     \chmod 600 "$COSIGN_KEY_FILE"
     \openssl pkey -in "$COSIGN_KEY_FILE" -pubout -out "$COSIGN_PUB_FILE" >/dev/null 2>&1 || __fail "openssl pubout failed"
+  elif __have cosign; then
+    COSIGN_PASSWORD="" \cosign generate-key-pair --output-key-prefix "${CREDS_DIR}/cosign" >/dev/null 2>&1 || __fail "cosign keygen failed"
+    \chmod 600 "$COSIGN_KEY_FILE"
   else
-    __warn "openssl not found; attempting cosign container keygen"
-    $COMPOSE -f "$COMPOSE_FILE" pull cosign >/dev/null 2>&1 || true
-    $COMPOSE -f "$COMPOSE_FILE" run --rm -v "${CREDS_DIR}:/keys" cosign sh -c "cosign generate-key-pair --yes --outfile /keys/cosign >/dev/null 2>&1" || __fail "cosign container keygen failed"
-    if [ -s "$COSIGN_KEY_FILE" ]; then \chmod 600 "$COSIGN_KEY_FILE"; else __fail "cosign key not created"; fi
+    __warn "openssl and cosign not found — skipping cosign key generation. Add keys manually to ${CREDS_DIR} if needed."
   fi
 fi
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+# Verify OPT_ROOT is writable before proceeding
+[ -w "$OPT_ROOT" ] || __fail "${OPT_ROOT} is not writable — run as root or fix permissions"
 # - - - - - - - - - - - - - - - - - - - - - - - - -
 # Write the single .env file — complete overwrite, mode 600, never committed
 __info "Writing ${ENV_FILE}"
@@ -444,10 +447,10 @@ EOSQL
 EOF
 \chmod 755 "${QUAY_INITDB_DIR}/01-init-quay.sh"
 
-cat >"${QUAY_INITDB_DIR}/02-init-clair.sh" <<'EOF'
+cat >"${QUAY_INITDB_DIR}/02-init-clair.sh" <<EOF
 #!/bin/bash
 set -e
-psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-EOSQL
+psql -v ON_ERROR_STOP=1 --username "\$POSTGRES_USER" --dbname "\$POSTGRES_DB" <<-EOSQL
     CREATE USER ${CLAIR_DB_USER_NAME} WITH PASSWORD '${CLAIR_DB_USER_PASS}';
     CREATE DATABASE clair OWNER ${CLAIR_DB_USER_NAME};
     GRANT ALL PRIVILEGES ON DATABASE clair TO ${CLAIR_DB_USER_NAME};
@@ -738,11 +741,12 @@ fi
 __info "Pulling container images (this may take several minutes)…"
 __info "  quay-app : ${QUAY_IMAGE}"
 __info "  quay-clair: ${CLAIR_IMAGE}"
-$COMPOSE -f "$COMPOSE_FILE" pull 2>&1 || \
+$COMPOSE --env-file "$ENV_FILE" -f "$COMPOSE_FILE" pull 2>&1 || \
   __fail "Image pull failed. Check that QUAY_IMAGE=${QUAY_IMAGE} and CLAIR_IMAGE=${CLAIR_IMAGE} exist and are reachable."
 
 __info "Starting Quay stack…"
-$COMPOSE -f "$COMPOSE_FILE" up -d 2>&1 || __fail "Failed to start Quay stack — check logs: $COMPOSE -f $COMPOSE_FILE logs"
+$COMPOSE --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d 2>&1 || \
+  __fail "Failed to start Quay stack — check logs: $COMPOSE --env-file $ENV_FILE -f $COMPOSE_FILE logs"
 # - - - - - - - - - - - - - - - - - - - - - - - - -
 # Wait for Quay to become healthy (up to 300 s; first boot takes longer due to DB migrations)
 sleep 2
@@ -756,7 +760,7 @@ while [ "$_tries" -gt 0 ]; do
   _tries=$((_tries - 1))
   sleep 2
 done
-[ "$HEALTH_OK" -eq 1 ] || __fail "Quay did not become healthy within 300 s. Check logs: $COMPOSE -f $COMPOSE_FILE logs quay-app"
+[ "$HEALTH_OK" -eq 1 ] || __fail "Quay did not become healthy within 300 s. Check logs: $COMPOSE --env-file $ENV_FILE -f $COMPOSE_FILE logs quay-app"
 # - - - - - - - - - - - - - - - - - - - - - - - - -
 # Auto-create and verify the superuser account.
 # Uses Quay's registration API; then marks the account verified directly in
@@ -765,23 +769,31 @@ if __have docker; then
   _cexec="docker exec"
 elif __have podman; then
   _cexec="podman exec"
+else
+  __fail "Neither docker nor podman found — cannot exec into quay-db to verify account"
 fi
 __info "Creating superuser account: ${APP_ADMIN_USER}"
 _acct_new=0
-if \curl -fsS -o /dev/null -X POST "http://${QUAY_BIND_ADDR}:${QUAY_PORT}/api/v1/user/" \
+_acct_http=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "http://${QUAY_BIND_ADDR}:${QUAY_PORT}/api/v1/user/" \
   -H "Content-Type: application/json" \
-  -d "{\"username\":\"${APP_ADMIN_USER}\",\"password\":\"${APP_ADMIN_PASS}\",\"email\":\"${APP_ADMIN_USER}@${BASE_DOMAIN_NAME}\"}" 2>/dev/null; then
-  _acct_new=1
-fi
+  -d "{\"username\":\"${APP_ADMIN_USER}\",\"password\":\"${APP_ADMIN_PASS}\",\"email\":\"${APP_ADMIN_USER}@${BASE_DOMAIN_NAME}\"}" 2>/dev/null || printf '000')
+case "$_acct_http" in
+  2*) _acct_new=1 ;;
+  # 400/409 = account already exists — treat as success
+  400|409) _acct_new=0 ;;
+  *) __warn "Account creation returned HTTP ${_acct_http} — account may not have been created; check Quay logs" ;;
+esac
+unset _acct_http
 # Mark verified in the DB — covers both first run and idempotent re-runs
 $_cexec quay-db psql -U "${DB_USER_NAME}" -d "${DB_CREATE_DATABASE_NAME}" \
   -c "UPDATE \"user\" SET verified=true WHERE username='${APP_ADMIN_USER}';" >/dev/null 2>&1 || \
-  __warn "Could not mark ${APP_ADMIN_USER} as verified — log in and verify via email if prompted"
+  __warn "Could not mark ${APP_ADMIN_USER} as verified in the DB — log in and verify via email if prompted"
 if [ "$_acct_new" -eq 1 ]; then
   __info "Superuser account created and verified"
 else
-  __info "Superuser account already exists"
+  __info "Superuser account already exists — credentials unchanged"
 fi
+unset _acct_new
 # - - - - - - - - - - - - - - - - - - - - - - - - -
 # Final summary — only place credentials are printed; never logged
 printf '\n'
