@@ -122,12 +122,11 @@ Options:
 Environment variables (set before running):
   DOMAIN              Registry hostname (e.g. registry.example.com)
   APP_ADMIN_USER      Superuser account created on first run (default: administrator)
+  APP_ADMIN_PASS      Superuser password — auto-generated if not set
   REGISTRY_TITLE      Full display name shown in the UI (default: Quay)
   REGISTRY_TITLE_SHORT  Short name shown in the browser tab (default: Quay)
   QUAY_IMAGE          Quay image to deploy (default: quay.io/projectquay/quay:latest)
   CLAIR_IMAGE         Clair image to deploy (default: quay.io/projectquay/clair:latest)
-  DB_USER_NAME        Postgres user for the Quay database (default: quay)
-  CLAIR_DB_USER_NAME  Postgres user for the Clair database (default: clair)
   TZ                  Timezone for all containers (default: America/New_York)
 
 All other values (passwords, secret keys, port) are auto-generated and
@@ -245,15 +244,22 @@ fi
 # - - - - - - - - - - - - - - - - - - - - - - - - -
 # Idempotent secret generation — load from .env on re-run, generate only when absent
 TZ="${TZ:-America/New_York}"
-DB_USER_NAME="${DB_USER_NAME:-quay}"
-DB_CREATE_DATABASE_NAME="${DB_CREATE_DATABASE_NAME:-quay}"
-CLAIR_DB_USER_NAME="${CLAIR_DB_USER_NAME:-clair}"
 APP_ADMIN_USER="${APP_ADMIN_USER:-administrator}"
 REGISTRY_TITLE="${REGISTRY_TITLE:-Quay}"
 REGISTRY_TITLE_SHORT="${REGISTRY_TITLE_SHORT:-${REGISTRY_TITLE}}"
 QUAY_IMAGE="${QUAY_IMAGE:-quay.io/projectquay/quay:latest}"
 CLAIR_IMAGE="${CLAIR_IMAGE:-quay.io/projectquay/clair:latest}"
-# Generate secrets only on first run (values are blank when .env is absent)
+# Generate all secrets and internal identifiers on first run only.
+# DB usernames and the database name are randomized lowercase identifiers —
+# internal implementation details not exposed as user-configurable options.
+if [ -z "${DB_USER_NAME:-}" ]; then
+  DB_USER_NAME="q$(dd if=/dev/urandom bs=1 count=96 2>/dev/null | tr -dc 'a-z0-9' | head -c 11)"
+fi
+# Database name always matches the Quay DB username (Postgres convention)
+DB_CREATE_DATABASE_NAME="${DB_USER_NAME}"
+if [ -z "${CLAIR_DB_USER_NAME:-}" ]; then
+  CLAIR_DB_USER_NAME="c$(dd if=/dev/urandom bs=1 count=96 2>/dev/null | tr -dc 'a-z0-9' | head -c 11)"
+fi
 if [ -z "${DB_USER_PASS:-}" ]; then DB_USER_PASS="$(__gen_secret 24)"; fi
 if [ -z "${CLAIR_DB_USER_PASS:-}" ]; then CLAIR_DB_USER_PASS="$(__gen_secret 24)"; fi
 if [ -z "${QUAY_SECRET_KEY:-}" ]; then QUAY_SECRET_KEY="$(__gen_secret 48)"; fi
@@ -449,11 +455,11 @@ services:
     environment:
       TZ: ${TZ:-America/New_York}
       CONTAINER_NAME: quay-db
-      POSTGRES_DB: ${DB_CREATE_DATABASE_NAME:-quay}
-      POSTGRES_USER: ${DB_USER_NAME:-quay}
+      POSTGRES_DB: ${DB_CREATE_DATABASE_NAME}
+      POSTGRES_USER: ${DB_USER_NAME}
       POSTGRES_PASSWORD: ${DB_USER_PASS:-changeme_db_password}
-      CLAIR_DB_USER_NAME: ${CLAIR_DB_USER_NAME:-clair}
-      CLAIR_DB_USER_PASS: ${CLAIR_DB_USER_PASS:-changeme_clair_password}
+      CLAIR_DB_USER_NAME: ${CLAIR_DB_USER_NAME}
+      CLAIR_DB_USER_PASS: ${CLAIR_DB_USER_PASS}
     volumes:
       - ./volumes/data/db/postgres/quay:/var/lib/postgresql/data:z
       - ./volumes/config/quay/init-db:/docker-entrypoint-initdb.d:ro,z

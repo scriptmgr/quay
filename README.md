@@ -47,9 +47,11 @@ Pass these before `sh install.sh` to override defaults:
 | `APP_ADMIN_USER` | `administrator` | Superuser account created on first run |
 | `REGISTRY_TITLE` | `Quay` | Full display name shown in the UI |
 | `REGISTRY_TITLE_SHORT` | same as `REGISTRY_TITLE` | Short name shown in the browser tab |
-| `DB_USER_NAME` | `quay` | Postgres user for the Quay database |
-| `CLAIR_DB_USER_NAME` | `clair` | Postgres user for the Clair database |
+| `QUAY_IMAGE` | `quay.io/projectquay/quay:latest` | Quay image to deploy |
+| `CLAIR_IMAGE` | `quay.io/projectquay/clair:latest` | Clair image to deploy |
 | `TZ` | `America/New_York` | Timezone for all containers |
+
+Database usernames, database name, and all passwords are randomized on first run and persisted to `/opt/quay/.env`. They are internal implementation details and are not user-configurable.
 
 All other values (passwords, secret keys, port) are auto-generated and persisted to `/opt/quay/.env`.
 
