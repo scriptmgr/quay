@@ -124,6 +124,8 @@ Environment variables (set before running):
   APP_ADMIN_USER      Superuser account created on first run (default: administrator)
   REGISTRY_TITLE      Full display name shown in the UI (default: Quay)
   REGISTRY_TITLE_SHORT  Short name shown in the browser tab (default: Quay)
+  QUAY_IMAGE          Quay image to deploy (default: quay.io/projectquay/quay:latest)
+  CLAIR_IMAGE         Clair image to deploy (default: quay.io/projectquay/clair:latest)
   DB_USER_NAME        Postgres user for the Quay database (default: quay)
   CLAIR_DB_USER_NAME  Postgres user for the Clair database (default: clair)
   TZ                  Timezone for all containers (default: America/New_York)
@@ -249,6 +251,8 @@ CLAIR_DB_USER_NAME="${CLAIR_DB_USER_NAME:-clair}"
 APP_ADMIN_USER="${APP_ADMIN_USER:-administrator}"
 REGISTRY_TITLE="${REGISTRY_TITLE:-Quay}"
 REGISTRY_TITLE_SHORT="${REGISTRY_TITLE_SHORT:-${REGISTRY_TITLE}}"
+QUAY_IMAGE="${QUAY_IMAGE:-quay.io/projectquay/quay:latest}"
+CLAIR_IMAGE="${CLAIR_IMAGE:-quay.io/projectquay/clair:latest}"
 # Generate secrets only on first run (values are blank when .env is absent)
 if [ -z "${DB_USER_PASS:-}" ]; then DB_USER_PASS="$(__gen_secret 24)"; fi
 if [ -z "${CLAIR_DB_USER_PASS:-}" ]; then CLAIR_DB_USER_PASS="$(__gen_secret 24)"; fi
@@ -349,6 +353,15 @@ FEATURE_ANONYMOUS_ACCESS: true
 FEATURE_PUBLIC_CATALOG: true
 CREATE_PRIVATE_REPO_ON_PUSH: false
 FEATURE_REQUIRE_EMAIL_VERIFICATION: ${SMTP_ENABLED}
+FEATURE_GRAVATAR: true
+FEATURE_CHANGE_TAG_EXPIRATION: true
+FEATURE_REPO_MIRROR: true
+FEATURE_REQUIRE_TEAM_INVITE: true
+FEATURE_MAILING: ${SMTP_ENABLED}
+FEATURE_DIRECT_LOGIN: true
+FEATURE_SUPERUSERS_FULL_ACCESS: true
+FEATURE_PARTIAL_IMAGES: true
+FEATURE_SECURITY_NOTIFICATIONS: true
 
 MAIL_SERVER: ${SMTP_HOST}
 MAIL_PORT: ${SMTP_PORT}
@@ -466,7 +479,7 @@ services:
       - ./volumes/data/db/redis:/data:z
 
   quay-clair:
-    image: quay.io/projectquay/clair:4.8.0
+    image: ${CLAIR_IMAGE}
     pull_policy: missing
     container_name: quay-clair
     restart: always
@@ -485,7 +498,7 @@ services:
         condition: service_healthy
 
   quay-app:
-    image: quay.io/projectquay/quay:3.15.2
+    image: ${QUAY_IMAGE}
     pull_policy: missing
     container_name: quay-app
     restart: always
