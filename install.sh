@@ -686,6 +686,14 @@ if [ -z "${NO_COLOR:-}" ]; then
 
 ⚠️  Store these credentials securely — they are not saved in logs.
 
+⚠️  A reverse proxy terminating TLS at https://${BASE_DOMAIN_NAME} is required
+    before docker login / push / pull will work. Quay's bearer auth challenge
+    redirects clients to the HTTPS domain — direct IP:port access is for
+    health checks and the web UI only.
+
+⚠️  After a manual restart (docker compose down/up) allow 2–4 minutes for
+    Quay to become available before assuming something is wrong.
+
 📝 Next steps:
    👉 Configure your reverse proxy → https://${BASE_DOMAIN_NAME}
    👉 Register the superuser account via the web UI (see above)
@@ -715,6 +723,14 @@ these exact username/password values. The account becomes a superuser
 automatically because it matches SUPER_USERS in config.yaml.
 
 Store these credentials securely -- they are not saved in logs.
+
+IMPORTANT: A reverse proxy terminating TLS at https://${BASE_DOMAIN_NAME}
+is required before docker login / push / pull will work. Quay's bearer
+auth challenge redirects clients to the HTTPS domain -- direct IP:port
+access is for health checks and the web UI only.
+
+After a manual restart (docker compose down/up) allow 2-4 minutes for
+Quay to become available before assuming something is wrong.
 
 Next steps:
    Configure your reverse proxy -> https://${BASE_DOMAIN_NAME}

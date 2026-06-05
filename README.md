@@ -90,6 +90,12 @@ tar -czf quay-backup.tar.gz /opt/quay/.env /opt/quay/volumes
 
 Quay runs on HTTP internally and expects TLS termination at a reverse proxy.
 
+> **⚠️ A working reverse proxy is required before `docker login` / push / pull will work.**
+> Quay's bearer auth challenge redirects Docker clients to the HTTPS domain. Without TLS
+> termination at `https://registry.example.com`, every `docker login` attempt will fail
+> with a DNS/connection error — even with `insecure-registries` configured. The direct
+> `http://host:port` endpoint is for health checks and the web UI only.
+
 ### Option 1: Reverse Proxy (Recommended)
 
 Configure nginx, Caddy, or Traefik to:
@@ -99,6 +105,11 @@ Configure nginx, Caddy, or Traefik to:
 - Terminate TLS
 
 ### Option 2: Insecure Registry (Testing Only)
+
+> **Note:** This only works for the web UI and health checks. `docker login` will still
+> fail due to the bearer auth redirect described above. For a fully functional test
+> environment without a real domain, use a local proxy (e.g. Caddy with a self-signed cert)
+> and add the cert to Docker's trust store.
 
 Add to `/etc/docker/daemon.json`:
 
@@ -154,6 +165,10 @@ docker compose up -d      # start
 docker compose down       # stop
 docker compose restart    # restart
 ```
+
+> **Note:** After a `down` / `up` cycle allow **2–4 minutes** for Quay to become fully
+> available. Database migration and gunicorn worker startup take longer on a cold boot
+> than a simple process restart. The health endpoint will return 503 until ready.
 
 ### View Logs
 
