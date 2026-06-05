@@ -100,8 +100,9 @@ QUAY_INITDB_DIR="${VOLUMES_DIR}/config/quay/init-db"
 CLAIR_CONF_DIR="${VOLUMES_DIR}/config/clair"
 CREDS_DIR="${VOLUMES_DIR}/config/credentials"
 # - - - - - - - - - - - - - - - - - - - - - - - - -
-# GC and cosign paths
+# GC, verify-user helper, and cosign paths
 GC_WRAPPER="${BIN_DIR}/quay-gc.sh"
+VERIFY_USER_WRAPPER="${BIN_DIR}/quay-verify-user.sh"
 COSIGN_KEY_FILE="${CREDS_DIR}/cosign.key"
 COSIGN_PUB_FILE="${CREDS_DIR}/cosign.pub"
 # - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -205,14 +206,15 @@ if [ -z "${HOST_IP_4:-}" ]; then
   fi
 fi
 # - - - - - - - - - - - - - - - - - - - - - - - - -
-# Probe SMTP: test localhost (where the MTA binds) then fall back to the
-# Docker bridge IP. SMTP_HOST is always set to the address containers use
-# (172.17.0.1 / HOST_IP_4) so Quay can reach the host MTA.
+# Probe SMTP: check whether a local MTA is listening on port 25.
+# ss -ltn is the most reliable check — it reads kernel socket state directly
+# without needing a live SMTP handshake. nc is the fallback.
+# SMTP_HOST is always set to HOST_IP_4 so containers can reach the host MTA.
 SMTP_PORT="${SMTP_PORT:-25}"
 if [ -z "${SMTP_ENABLED:-}" ]; then
-  # Try 127.0.0.1 first (host loopback), then HOST_IP_4 (docker0 bridge)
-  if \curl --silent --connect-timeout 3 "smtp://127.0.0.1:${SMTP_PORT}/" >/dev/null 2>&1 || \
-     \curl --silent --connect-timeout 3 "smtp://${HOST_IP_4}:${SMTP_PORT}/" >/dev/null 2>&1; then
+  if \ss -ltn 2>/dev/null | \awk -v p="${SMTP_PORT}" '$4 ~ (":"p"$"){found=1} END{exit !found}'; then
+    SMTP_ENABLED="true"
+  elif __have nc && \nc -zw3 127.0.0.1 "${SMTP_PORT}" >/dev/null 2>&1; then
     SMTP_ENABLED="true"
   else
     SMTP_ENABLED="false"
@@ -610,6 +612,41 @@ EOS
 \mv "${GC_WRAPPER}.tmp" "$GC_WRAPPER"
 \chmod 700 "$GC_WRAPPER"
 # - - - - - - - - - - - - - - - - - - - - - - - - -
+# Write verify-user helper — marks a Quay account verified in the DB.
+# Needed when SMTP is disabled: Quay blocks login until verified=true even
+# with FEATURE_REQUIRE_EMAIL_VERIFICATION: false.
+__info "Writing ${VERIFY_USER_WRAPPER}"
+cat >"${VERIFY_USER_WRAPPER}.tmp" <<'EOS'
+#!/usr/bin/env sh
+# shellcheck shell=sh
+# Usage: quay-verify-user.sh <username>
+# Marks the named Quay account as email-verified directly in postgres.
+# Required when SMTP is disabled and a user is stuck on the activation screen.
+set -e
+OPT_ROOT="/opt/quay"
+ENV_FILE="${OPT_ROOT}/.env"
+# shellcheck disable=SC1090
+[ -f "$ENV_FILE" ] && . "$ENV_FILE"
+_username="${1:-}"
+if [ -z "$_username" ]; then
+  printf 'Usage: %s <username>\n' "${0##*/}" >&2
+  exit 1
+fi
+if command -v docker >/dev/null 2>&1; then
+  _cexec="docker exec"
+elif command -v podman >/dev/null 2>&1; then
+  _cexec="podman exec"
+else
+  printf 'Error: docker or podman required\n' >&2
+  exit 1
+fi
+$_cexec quay-db psql -U "${DB_USER_NAME}" -d "${DB_CREATE_DATABASE_NAME}" \
+  -c "UPDATE \"user\" SET verified=true WHERE username='${_username}';"
+printf 'User "%s" marked as verified.\n' "$_username"
+EOS
+\mv "${VERIFY_USER_WRAPPER}.tmp" "$VERIFY_USER_WRAPPER"
+\chmod 700 "$VERIFY_USER_WRAPPER"
+# - - - - - - - - - - - - - - - - - - - - - - - - -
 # Schedule GC daily at 03:00 — systemd timer preferred; cron fallback
 if __have systemctl; then
   cat >/etc/systemd/system/quay-gc.service <<EOF
@@ -715,6 +752,7 @@ if [ -z "${NO_COLOR:-}" ]; then
 
 ⚠️  Store these credentials securely — they are not saved in logs.
 
+$( [ "$SMTP_ENABLED" != "true" ] && printf '⚠️  SMTP is disabled. New users who register via the web UI will see an\n    activation email prompt and cannot log in until verified. Run:\n      %s <username>\n' "$VERIFY_USER_WRAPPER" )
 ⚠️  A reverse proxy terminating TLS at https://${BASE_DOMAIN_NAME} is required
     before docker login / push / pull will work. Quay's bearer auth challenge
     redirects clients to the HTTPS domain — direct IP:port access is for
@@ -750,6 +788,7 @@ Account created and verified -- log in at https://${BASE_DOMAIN_NAME}
 
 Store these credentials securely -- they are not saved in logs.
 
+$( [ "$SMTP_ENABLED" != "true" ] && printf 'SMTP is disabled. New users who register via the web UI will see an\nactivation email prompt and cannot log in until verified. Run:\n  %s <username>\n' "$VERIFY_USER_WRAPPER" )
 IMPORTANT: A reverse proxy terminating TLS at https://${BASE_DOMAIN_NAME}
 is required before docker login / push / pull will work. Quay's bearer
 auth challenge redirects clients to the HTTPS domain -- direct IP:port
