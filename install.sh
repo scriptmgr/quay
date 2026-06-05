@@ -367,11 +367,12 @@ _env_tmp="${ENV_FILE}.tmp.$$"
   "$CLAIR_CONF_DIR"
 \chmod 700 "$CREDS_DIR"
 # - - - - - - - - - - - - - - - - - - - - - - - - -
-# Write Quay config.yaml — create only on first run to preserve manual edits
+# Write Quay config.yaml — always refreshed on every run.
+# Quay's persistent state (users, repos, images) lives in the database.
+# config.yaml is pure configuration; it is safe and correct to overwrite it.
 CFG="${QUAY_STACK_DIR}/config.yaml"
-if [ ! -f "$CFG" ]; then
-  __info "Writing ${CFG}"
-  cat >"${CFG}.tmp" <<EOF
+__info "Writing ${CFG}"
+cat >"${CFG}.tmp" <<EOF
 SERVER_HOSTNAME: ${BASE_DOMAIN_NAME}
 PREFERRED_URL_SCHEME: https
 EXTERNAL_TLS_TERMINATION: true
@@ -432,10 +433,9 @@ USER_EVENTS_REDIS:
   host: quay-redis
   port: 6379
 EOF
-  \mv "${CFG}.tmp" "$CFG"
-  # 640: Quay runs as GID 0 (root group) so group-read is sufficient; not world-readable
-  \chmod 640 "$CFG"
-fi
+\mv "${CFG}.tmp" "$CFG" || __fail "Failed to write ${CFG}"
+# 640: Quay runs as GID 0 (root group) so group-read is sufficient; not world-readable
+\chmod 640 "$CFG"
 # - - - - - - - - - - - - - - - - - - - - - - - - -
 # Write postgres init scripts — run by postgres only on first-boot (empty data dir)
 cat >"${QUAY_INITDB_DIR}/01-init-quay.sh" <<'EOF'
