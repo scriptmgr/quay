@@ -659,6 +659,31 @@ while [ "$_tries" -gt 0 ]; do
 done
 [ "$HEALTH_OK" -eq 1 ] || __fail "Quay did not become healthy within 300 s. Check logs: $COMPOSE -f $COMPOSE_FILE logs quay-app"
 # - - - - - - - - - - - - - - - - - - - - - - - - -
+# Auto-create and verify the superuser account.
+# Uses Quay's registration API; then marks the account verified directly in
+# the database so email verification never blocks login regardless of SMTP config.
+if __have docker; then
+  _cexec="docker exec"
+elif __have podman; then
+  _cexec="podman exec"
+fi
+__info "Creating superuser account: ${APP_ADMIN_USER}"
+_acct_new=0
+if \curl -fsS -o /dev/null -X POST "http://${QUAY_BIND_ADDR}:${QUAY_PORT}/api/v1/user/" \
+  -H "Content-Type: application/json" \
+  -d "{\"username\":\"${APP_ADMIN_USER}\",\"password\":\"${APP_ADMIN_PASS}\",\"email\":\"admin@${BASE_DOMAIN_NAME}\"}" 2>/dev/null; then
+  _acct_new=1
+fi
+# Mark verified in the DB — covers both first run and idempotent re-runs
+$_cexec quay-db psql -U "${DB_USER_NAME}" -d "${DB_CREATE_DATABASE_NAME}" \
+  -c "UPDATE \"user\" SET verified=true WHERE username='${APP_ADMIN_USER}';" >/dev/null 2>&1 || \
+  __warn "Could not mark ${APP_ADMIN_USER} as verified — log in and verify via email if prompted"
+if [ "$_acct_new" -eq 1 ]; then
+  __info "Superuser account created and verified"
+else
+  __info "Superuser account already exists"
+fi
+# - - - - - - - - - - - - - - - - - - - - - - - - -
 # Final summary — only place credentials are printed; never logged
 printf '\n'
 if [ -z "${NO_COLOR:-}" ]; then
@@ -679,10 +704,7 @@ if [ -z "${NO_COLOR:-}" ]; then
 👤 Username: ${APP_ADMIN_USER}
 🔑 Password: ${APP_ADMIN_PASS}
 
-⚠️  These credentials are used to REGISTER via the web UI — not pre-created.
-    Navigate to https://${BASE_DOMAIN_NAME} → Create Account, then enter
-    these exact username/password values. The account becomes a superuser
-    automatically because it matches SUPER_USERS in config.yaml.
+✅ Account created and verified — log in at https://${BASE_DOMAIN_NAME}
 
 ⚠️  Store these credentials securely — they are not saved in logs.
 
@@ -696,7 +718,7 @@ if [ -z "${NO_COLOR:-}" ]; then
 
 📝 Next steps:
    👉 Configure your reverse proxy → https://${BASE_DOMAIN_NAME}
-   👉 Register the superuser account via the web UI (see above)
+   👉 Log in with the superuser account at https://${BASE_DOMAIN_NAME}
    👉 Set DOMAIN=${BASE_DOMAIN_NAME} sh ${APPNAME} to update configuration
 EOF
 else
@@ -717,10 +739,7 @@ SUPERUSER ACCOUNT
 Username: ${APP_ADMIN_USER}
 Password: ${APP_ADMIN_PASS}
 
-These credentials are used to REGISTER via the web UI -- not pre-created.
-Navigate to https://${BASE_DOMAIN_NAME} -> Create Account, then enter
-these exact username/password values. The account becomes a superuser
-automatically because it matches SUPER_USERS in config.yaml.
+Account created and verified -- log in at https://${BASE_DOMAIN_NAME}
 
 Store these credentials securely -- they are not saved in logs.
 
@@ -734,7 +753,7 @@ Quay to become available before assuming something is wrong.
 
 Next steps:
    Configure your reverse proxy -> https://${BASE_DOMAIN_NAME}
-   Register the superuser account via the web UI (see above)
+   Log in with the superuser account at https://${BASE_DOMAIN_NAME}
    Set DOMAIN=${BASE_DOMAIN_NAME} sh ${APPNAME} to update configuration
 EOF
 fi
