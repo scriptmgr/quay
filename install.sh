@@ -26,11 +26,73 @@ APPNAME="${0##*/}"
 set -e
 umask 077
 # - - - - - - - - - - - - - - - - - - - - - - - - -
-__ts() { date +"%Y-%m-%d %H:%M:%S"; }
-__version() { printf '%s %s\n' "$APPNAME" "$VERSION"; }
-__info() { printf '%s %s\n' "$(__ts)" "$*"; }
-__warn() { printf '%s WARN: %s\n' "$(__ts)" "$*"; }
-__fail() { printf '%s ERROR: %s\n' "$(__ts)" "$*" >&2; exit 1; }
+# Color variables — empty until __init_colors is called after flag parsing
+C_RESET='' C_BOLD='' C_DIM='' C_RED='' C_GREEN=''
+C_YELLOW='' C_BLUE='' C_MAGENTA='' C_CYAN='' C_WHITE=''
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+# Populate ANSI color variables when color output is active
+__init_colors() {
+  if __use_color; then
+    C_RESET='\033[0m';   C_BOLD='\033[1m';    C_DIM='\033[2m'
+    C_RED='\033[0;31m';  C_GREEN='\033[0;32m'; C_YELLOW='\033[0;33m'
+    C_BLUE='\033[0;34m'; C_MAGENTA='\033[0;35m'; C_CYAN='\033[0;36m'
+    C_WHITE='\033[1;37m'
+  fi
+}
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+# Print text in a given color then reset; usage: __printf_color "text" "$C_GREEN"
+__printf_color() { printf '%b%s%b\n' "${2:-}" "$1" "${C_RESET}"; }
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+__ts()      { date +"%H:%M:%S"; }
+__version() { printf '%b%s %s%b\n' "${C_BOLD}" "$APPNAME" "$VERSION" "${C_RESET}"; }
+__info()    { printf '%b[%s]%b %s\n' "${C_DIM}" "$(__ts)" "${C_RESET}" "$*"; }
+__warn()    { printf '%b[%s] ⚠  %s%b\n' "${C_YELLOW}${C_BOLD}" "$(__ts)" "$*" "${C_RESET}"; }
+__fail()    {
+  [ -n "${_SPIN_PID:-}" ] && __spin_stop fail
+  printf '%b[%s] ✘  %s%b\n' "${C_RED}${C_BOLD}" "$(__ts)" "$*" "${C_RESET}" >&2
+  exit 1
+}
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+# Print a bold section header for a major installation stage
+__section() { printf '\n%b▶  %s%b\n' "${C_BOLD}${C_CYAN}" "$*" "${C_RESET}"; }
+# Print a green success confirmation line
+__ok()      { printf '  %b✔%b  %s\n' "${C_GREEN}" "${C_RESET}" "$*"; }
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+# Spinner state
+_SPIN_PID=''
+_SPIN_MSG=''
+# Start a spinner in the background showing msg; no-op (plain __info) when color is off
+__spin_start() {
+  _SPIN_MSG="$1"
+  if ! __use_color; then __info "${_SPIN_MSG}"; return; fi
+  printf '\033[?25l'
+  (
+    local _f='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏' _n=10 _i=0
+    while true; do
+      printf '\r  %b%s%b  %s ' "${C_CYAN}" "${_f:$((_i % _n)):1}" "${C_RESET}" "${_SPIN_MSG}"
+      _i=$((_i + 1))
+      sleep 0.1 2>/dev/null || sleep 1
+    done
+  ) &
+  _SPIN_PID=$!
+}
+# Stop the spinner; status: ok (green ✔) or fail (red ✘)
+__spin_stop() {
+  local _s="${1:-ok}"
+  if [ -n "${_SPIN_PID:-}" ]; then
+    kill "${_SPIN_PID}" 2>/dev/null || true
+    wait "${_SPIN_PID}" 2>/dev/null || true
+    _SPIN_PID=''
+  fi
+  if ! __use_color; then return; fi
+  printf '\033[?25h'
+  if [ "$_s" = "ok" ]; then
+    printf '\r\033[K  %b✔%b  %s\n' "${C_GREEN}" "${C_RESET}" "${_SPIN_MSG}"
+  else
+    printf '\r\033[K  %b✘%b  %s\n' "${C_RED}" "${C_RESET}" "${_SPIN_MSG}"
+  fi
+  _SPIN_MSG=''
+}
 # - - - - - - - - - - - - - - - - - - - - - - - - -
 # Check that a required command is present
 __need() { command -v "$1" >/dev/null 2>&1 || __fail "Missing required command: $1"; }
@@ -199,6 +261,10 @@ done
 unset _arg
 if [ "$DO_REMOVE" -eq 1 ]; then __do_remove; exit 0; fi
 unset DO_REMOVE
+# Initialize color vars now that COLOR_FLAG is resolved from flags
+__init_colors
+# Ensure spinner and cursor are cleaned up on any unexpected exit
+trap '[ -n "${_SPIN_PID:-}" ] && { kill "${_SPIN_PID}" 2>/dev/null || true; printf "\033[?25h"; }' EXIT INT TERM
 # - - - - - - - - - - - - - - - - - - - - - - - - -
 # Print version and ensure OPT_ROOT and BIN_DIR exist before sourcing .env
 __version
@@ -361,6 +427,7 @@ fi
 [ -w "$OPT_ROOT" ] || __fail "${OPT_ROOT} is not writable — run as root or fix permissions"
 # - - - - - - - - - - - - - - - - - - - - - - - - -
 # Write the single .env file — complete overwrite, mode 600, never committed
+__section "Writing configuration"
 __info "Writing ${ENV_FILE}"
 _env_tmp="${ENV_FILE}.tmp.$$"
 {
@@ -913,7 +980,7 @@ else
 fi
 # - - - - - - - - - - - - - - - - - - - - - - - - -
 # Pull images and bring up the stack
-__info "Pulling container images (this may take several minutes)…"
+__section "Pulling images"
 __info "  quay-app : ${QUAY_IMAGE}"
 __info "  quay-clair: ${CLAIR_IMAGE}"
 $COMPOSE --env-file "$ENV_FILE" -f "$COMPOSE_FILE" pull 2>&1 || \
@@ -921,20 +988,21 @@ $COMPOSE --env-file "$ENV_FILE" -f "$COMPOSE_FILE" pull 2>&1 || \
 
 # Start support services without recreating (db/redis data must survive re-runs).
 # Force-recreate quay-app and quay-clair so they always pick up the refreshed configs.
-__info "Starting Quay stack…"
+__section "Starting Quay stack"
 $COMPOSE --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d quay-db quay-redis 2>&1 || \
   __fail "Failed to start quay-db / quay-redis — check logs: $COMPOSE --env-file $ENV_FILE -f $COMPOSE_FILE logs"
 # Wait for quay-db to pass its health check before starting dependent services.
 # Without this gate the second compose up sees quay-db as unhealthy and fails instantly.
-__info "Waiting for quay-db to become healthy (up to 120 s)…"
+__spin_start "Waiting for quay-db to become healthy (up to 120 s)…"
 _db_wait=0
 while [ "$_db_wait" -lt 120 ]; do
   _db_status=$(docker inspect --format='{{.State.Health.Status}}' quay-db 2>/dev/null || true)
   if [ "$_db_status" = "healthy" ]; then
-    __info "quay-db is healthy"
+    __spin_stop ok
     break
   fi
   if [ "$_db_status" = "unhealthy" ]; then
+    __spin_stop fail
     __fail "quay-db is unhealthy — check logs: $COMPOSE --env-file $ENV_FILE -f $COMPOSE_FILE logs quay-db"
   fi
   sleep 5
@@ -946,21 +1014,27 @@ $COMPOSE --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --force-recreate quay-c
 # - - - - - - - - - - - - - - - - - - - - - - - - -
 # Wait for Quay to become healthy (up to 300 s; first boot takes longer due to DB migrations)
 sleep 2
+__spin_start "Waiting for Quay to become healthy (up to 300 s)…"
 HEALTH_OK=0
 _tries=150
 while [ "$_tries" -gt 0 ]; do
   if \curl -fsS --max-time 3 "http://${QUAY_BIND_ADDR}:${QUAY_PORT}/health/instance" >/dev/null 2>&1; then
     HEALTH_OK=1
+    __spin_stop ok
     break
   fi
   _tries=$((_tries - 1))
   sleep 2
 done
-[ "$HEALTH_OK" -eq 1 ] || __fail "Quay did not become healthy within 300 s. Check logs: $COMPOSE --env-file $ENV_FILE -f $COMPOSE_FILE logs quay-app"
+if [ "$HEALTH_OK" -ne 1 ]; then
+  __spin_stop fail
+  __fail "Quay did not become healthy within 300 s. Check logs: $COMPOSE --env-file $ENV_FILE -f $COMPOSE_FILE logs quay-app"
+fi
 # - - - - - - - - - - - - - - - - - - - - - - - - -
 # Auto-create and verify the superuser account.
 # Uses Quay's registration API; then marks the account verified directly in
 # the database so email verification never blocks login regardless of SMTP config.
+__section "Superuser setup"
 if __have docker; then
   _cexec="docker exec"
 elif __have podman; then
@@ -968,7 +1042,7 @@ elif __have podman; then
 else
   __fail "Neither docker nor podman found — cannot exec into quay-db to verify account"
 fi
-__info "Creating superuser account: ${APP_ADMIN_USER}"
+__spin_start "Creating superuser account: ${APP_ADMIN_USER}"
 _acct_new=0
 _acct_http=$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' \
   -X POST "http://${QUAY_BIND_ADDR}:${QUAY_PORT}/api/v1/user/" \
@@ -977,19 +1051,21 @@ _acct_http=$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' \
   2>/dev/null || printf '000')
 case "$_acct_http" in
   2*) _acct_new=1 ;;
-  # 400/409 = account already exists — treat as success
-  400|409) _acct_new=0 ;;
-  *) __warn "Account creation returned HTTP ${_acct_http} — account may not have been created; check Quay logs" ;;
+  # 400/403/409 = account already exists or initialize endpoint disabled — all treated as success
+  400|403|409) _acct_new=0 ;;
+  *) __spin_stop fail
+     __warn "Account creation returned HTTP ${_acct_http} — account may not have been created; check Quay logs" ;;
 esac
+__spin_stop ok
 unset _acct_http
 # Mark verified in the DB — covers both first run and idempotent re-runs
 $_cexec quay-db psql -U "${DB_USER_NAME}" -d "${DB_CREATE_DATABASE_NAME}" \
   -c "UPDATE \"user\" SET verified=true WHERE username='${APP_ADMIN_USER}';" >/dev/null 2>&1 || \
   __warn "Could not mark ${APP_ADMIN_USER} as verified in the DB — log in and verify via email if prompted"
 if [ "$_acct_new" -eq 1 ]; then
-  __info "Superuser account created and verified"
+  __ok "Superuser account created and verified"
 else
-  __info "Superuser account already exists — credentials unchanged"
+  __ok "Superuser account already exists — credentials unchanged"
 fi
 unset _acct_new
 # - - - - - - - - - - - - - - - - - - - - - - - - -
