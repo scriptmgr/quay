@@ -1044,15 +1044,17 @@ else
 fi
 __spin_start "Creating superuser account: ${APP_ADMIN_USER}"
 _acct_new=0
+# /api/v1/user/initialize is Quay's bootstrap endpoint — creates the first superuser.
+# Returns 2xx on first run; 403 once any user exists (endpoint disabled by Quay itself).
 _acct_http=$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' \
-  -X POST "http://${QUAY_BIND_ADDR}:${QUAY_PORT}/api/v1/user/" \
+  -X POST "http://${QUAY_BIND_ADDR}:${QUAY_PORT}/api/v1/user/initialize" \
   -H "Content-Type: application/json" \
-  -d "{\"username\":\"${APP_ADMIN_USER}\",\"password\":\"${APP_ADMIN_PASS}\",\"email\":\"${APP_ADMIN_USER}@${BASE_DOMAIN_NAME}\"}" \
+  -d "{\"username\":\"${APP_ADMIN_USER}\",\"password\":\"${APP_ADMIN_PASS}\",\"email\":\"${APP_ADMIN_USER}@${BASE_DOMAIN_NAME}\",\"access_token\":true}" \
   2>/dev/null || printf '000')
 case "$_acct_http" in
   2*) _acct_new=1 ;;
-  # 400/403/409 = account already exists or initialize endpoint disabled — all treated as success
-  400|403|409) _acct_new=0 ;;
+  # 403 = initialize endpoint disabled because users already exist — treat as success
+  403) _acct_new=0 ;;
   *) __spin_stop fail
      __warn "Account creation returned HTTP ${_acct_http} — account may not have been created; check Quay logs" ;;
 esac
