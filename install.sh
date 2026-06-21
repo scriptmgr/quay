@@ -653,9 +653,10 @@ services:
       - ./volumes/config/quay/init-db:/docker-entrypoint-initdb.d:ro,z
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 60s
 
   quay-redis:
     image: docker.io/library/redis:7-alpine
@@ -909,6 +910,23 @@ $COMPOSE --env-file "$ENV_FILE" -f "$COMPOSE_FILE" pull 2>&1 || \
 __info "Starting Quay stack…"
 $COMPOSE --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d quay-db quay-redis 2>&1 || \
   __fail "Failed to start quay-db / quay-redis — check logs: $COMPOSE --env-file $ENV_FILE -f $COMPOSE_FILE logs"
+# Wait for quay-db to pass its health check before starting dependent services.
+# Without this gate the second compose up sees quay-db as unhealthy and fails instantly.
+__info "Waiting for quay-db to become healthy (up to 120 s)…"
+_db_wait=0
+while [ "$_db_wait" -lt 120 ]; do
+  _db_status=$(docker inspect --format='{{.State.Health.Status}}' quay-db 2>/dev/null || true)
+  if [ "$_db_status" = "healthy" ]; then
+    __info "quay-db is healthy"
+    break
+  fi
+  if [ "$_db_status" = "unhealthy" ]; then
+    __fail "quay-db is unhealthy — check logs: $COMPOSE --env-file $ENV_FILE -f $COMPOSE_FILE logs quay-db"
+  fi
+  sleep 5
+  _db_wait=$((_db_wait + 5))
+done
+unset _db_wait _db_status
 $COMPOSE --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --force-recreate quay-clair quay-app 2>&1 || \
   __fail "Failed to start quay-app / quay-clair — check logs: $COMPOSE --env-file $ENV_FILE -f $COMPOSE_FILE logs"
 # - - - - - - - - - - - - - - - - - - - - - - - - -
