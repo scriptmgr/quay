@@ -378,7 +378,7 @@ if [ -z "${QUAY_IMAGE:-}" ]; then
     sed 's/.*"name":"\([^"]*\)".*/\1/' | \
     awk -F. 'NF==3 && $1+0==$1 && $2+0==$2 && $3+0==$3' | \
     sort -t. -k1,1n -k2,2n -k3,3n | tail -1)
-  QUAY_IMAGE="quay.io/projectquay/quay:${_quay_ver:-3.17.2}"
+  QUAY_IMAGE="quay.io/projectquay/quay:${_quay_ver:-3.17.3}"
   unset _quay_ver
 fi
 if [ -z "${CLAIR_IMAGE:-}" ]; then
@@ -1031,67 +1031,53 @@ if [ "$HEALTH_OK" -ne 1 ]; then
   __fail "Quay did not become healthy within 300 s. Check logs: $COMPOSE --env-file $ENV_FILE -f $COMPOSE_FILE logs quay-app"
 fi
 # - - - - - - - - - - - - - - - - - - - - - - - - -
-# Auto-create and verify the superuser account.
-# Uses Quay's registration API; then marks the account verified directly in
-# the database so email verification never blocks login regardless of SMTP config.
+# Auto-create and verify the superuser account directly in the database.
+# Bypasses Quay's REST API entirely — no CSRF tokens, no version-specific
+# endpoint availability. Uses the quay-app container's Python/bcrypt runtime
+# to generate the hash, then upserts the user row in quay-db.
 __section "Superuser setup"
 if __have docker; then
   _cexec="docker exec"
 elif __have podman; then
   _cexec="podman exec"
 else
-  __fail "Neither docker nor podman found — cannot exec into quay-db to verify account"
+  __fail "Neither docker nor podman found — cannot create superuser account"
 fi
 __spin_start "Creating superuser account: ${APP_ADMIN_USER}"
-_acct_new=0
-# /api/v1/user/initialize is Quay's bootstrap endpoint — creates the first superuser.
-# Returns 2xx on first run; 403 once any user exists (endpoint disabled by Quay itself).
-_acct_http=$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' \
-  -X POST "http://${QUAY_BIND_ADDR}:${QUAY_PORT}/api/v1/user/initialize" \
-  -H "Content-Type: application/json" \
-  -d "{\"username\":\"${APP_ADMIN_USER}\",\"password\":\"${APP_ADMIN_PASS}\",\"email\":\"${APP_ADMIN_USER}@${BASE_DOMAIN_NAME}\",\"access_token\":true}" \
-  2>/dev/null || printf '000')
-case "$_acct_http" in
-  2*) _acct_new=1 ;;
-  # 403 = initialize endpoint disabled because users already exist.
-  # Sync the password from .env into the DB so re-runs always match stored credentials.
-  403)
-    _acct_new=0
-    _pw_hash=$($_cexec quay-app python3 -c "
-import sys
-pw = sys.argv[1].encode()
-try:
-    import bcrypt
-    print(bcrypt.hashpw(pw, bcrypt.gensalt(12)).decode())
-except ImportError:
-    from passlib.hash import bcrypt as bc
-    print(bc.hash(sys.argv[1]))
+
+# Generate the bcrypt password hash inside the quay-app container so we use
+# the exact same bcrypt version that Quay itself uses.
+_pw_hash=$($_cexec quay-app python3 -c "
+import bcrypt, sys
+pw = sys.argv[1].encode('utf-8')
+print(bcrypt.hashpw(pw, bcrypt.gensalt(12)).decode())
 " "$APP_ADMIN_PASS" 2>/dev/null || true)
-    if [ -n "${_pw_hash:-}" ]; then
-      $_cexec quay-db psql -U "${DB_USER_NAME}" -d "${DB_CREATE_DATABASE_NAME}" \
-        -c "UPDATE \"user\" SET password_hash='${_pw_hash}' WHERE username='${APP_ADMIN_USER}';" \
-        >/dev/null 2>&1 || \
-        __warn "Could not sync password for ${APP_ADMIN_USER} in the DB"
-    else
-      __warn "Could not generate bcrypt hash — password not synced; use the UI to reset it"
-    fi
-    unset _pw_hash
-    ;;
-  *) __spin_stop fail
-     __warn "Account creation returned HTTP ${_acct_http} — account may not have been created; check Quay logs" ;;
-esac
-__spin_stop ok
-unset _acct_http
-# Mark verified in the DB — covers both first run and idempotent re-runs
-$_cexec quay-db psql -U "${DB_USER_NAME}" -d "${DB_CREATE_DATABASE_NAME}" \
-  -c "UPDATE \"user\" SET verified=true WHERE username='${APP_ADMIN_USER}';" >/dev/null 2>&1 || \
-  __warn "Could not mark ${APP_ADMIN_USER} as verified in the DB — log in and verify via email if prompted"
-if [ "$_acct_new" -eq 1 ]; then
-  __ok "Superuser account created and verified"
-else
-  __ok "Superuser account synced and verified"
+
+if [ -z "${_pw_hash:-}" ]; then
+  __spin_stop fail
+  __fail "Could not generate password hash from quay-app container — is the container running?"
 fi
-unset _acct_new
+
+# Upsert the superuser row. ON CONFLICT (username) means re-runs always sync
+# the password from .env and re-verify the account, which handles manual
+# sign-ups, prior-run leftovers, and SMTP-blocked accounts in one step.
+# RETURNING (xmax = 0) distinguishes INSERT (t) from UPDATE (f).
+_acct_sql="INSERT INTO \"user\" (uuid, username, password_hash, email, verified, organization, robot, enabled, invoice_email, is_free_account, removed_tag_expiration_s, creation_date)
+VALUES (gen_random_uuid()::text, '${APP_ADMIN_USER}', '${_pw_hash}', '${APP_ADMIN_USER}@${BASE_DOMAIN_NAME}', true, false, false, true, false, true, 1209600, NOW())
+ON CONFLICT (username) DO UPDATE SET password_hash = EXCLUDED.password_hash, verified = true
+RETURNING (xmax = 0) AS inserted;"
+_acct_result=$($_cexec quay-db psql -U "${DB_USER_NAME}" -d "${DB_CREATE_DATABASE_NAME}" -tA -c "$_acct_sql" 2>/dev/null || true)
+unset _pw_hash _acct_sql
+
+case "${_acct_result:-}" in
+  t) __spin_stop ok; __ok "Superuser account created and verified" ;;
+  f) __spin_stop ok; __ok "Superuser account password synced and verified" ;;
+  *)
+    __spin_stop fail
+    __fail "Failed to create superuser in the database — check logs: $COMPOSE --env-file $ENV_FILE -f $COMPOSE_FILE logs quay-db"
+    ;;
+esac
+unset _acct_result
 # - - - - - - - - - - - - - - - - - - - - - - - - -
 # Final summary — only place credentials are printed; never logged
 printf '\n'
