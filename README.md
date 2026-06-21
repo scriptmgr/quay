@@ -11,7 +11,17 @@ Designed to be **distro-agnostic**, **idempotent**, and safe to re-run.
 ### One-liner
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/scriptmgr/quay/main/install.sh | DOMAIN=registry.example.com bash
+curl -q -LSsf https://github.com/scriptmgr/quay/raw/refs/heads/main/install.sh | DOMAIN=registry.example.com bash -s --
+```
+
+Pass flags after the `--`:
+
+```sh
+# Force no color output
+curl -q -LSsf https://github.com/scriptmgr/quay/raw/refs/heads/main/install.sh | DOMAIN=registry.example.com bash -s -- --color=no
+
+# Tear down an existing install
+curl -q -LSsf https://github.com/scriptmgr/quay/raw/refs/heads/main/install.sh | bash -s -- --remove
 ```
 
 ### Git clone
