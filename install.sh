@@ -1,5 +1,5 @@
-#!/usr/bin/env sh
-# shellcheck shell=sh
+#!/usr/bin/env bash
+# shellcheck shell=bash
 # - - - - - - - - - - - - - - - - - - - - - - - - -
 ##@Version           :  202606022117-git
 # @@Author           :  Jason Hempstead
@@ -253,7 +253,7 @@ REGISTRY_TITLE_SHORT="${REGISTRY_TITLE_SHORT:-${REGISTRY_TITLE}}"
 if [ -z "${QUAY_IMAGE:-}" ]; then
   _quay_ver=$(curl -fsSL --connect-timeout 5 \
     "https://quay.io/api/v1/repository/projectquay/quay/tag/?onlyActiveTags=true&limit=100" \
-    2>/dev/null | tr ',' '\n' | grep '"name"' | \
+    2>/dev/null | tr ',' '\n' | grep -- '"name"' | \
     sed 's/.*"name":"\([^"]*\)".*/\1/' | \
     awk -F. 'NF==3 && $1+0==$1 && $2+0==$2 && $3+0==$3' | \
     sort -t. -k1,1n -k2,2n -k3,3n | tail -1)
@@ -263,7 +263,7 @@ fi
 if [ -z "${CLAIR_IMAGE:-}" ]; then
   _clair_ver=$(curl -fsSL --connect-timeout 5 \
     "https://quay.io/api/v1/repository/projectquay/clair/tag/?onlyActiveTags=true&limit=100" \
-    2>/dev/null | tr ',' '\n' | grep '"name"' | \
+    2>/dev/null | tr ',' '\n' | grep -- '"name"' | \
     sed 's/.*"name":"\([^"]*\)".*/\1/' | \
     awk -F. 'NF==3 && $1+0==$1 && $2+0==$2 && $3+0==$3' | \
     sort -t. -k1,1n -k2,2n -k3,3n | tail -1)
@@ -397,6 +397,16 @@ FEATURE_DIRECT_LOGIN: true
 FEATURE_SUPERUSERS_FULL_ACCESS: true
 FEATURE_PARTIAL_IMAGES: true
 FEATURE_SECURITY_NOTIFICATIONS: true
+
+# Use the Angular v1 UI (legacy) instead of the React v2 UI.
+# The React v2 UI redirects all unauthenticated requests to /signin via its
+# axios interceptor on any 401, even when FEATURE_ANONYMOUS_ACCESS is true.
+# The Angular v1 UI handles 401 from /api/v1/user/ gracefully — it sets
+# anonymous: true and shows the public landing/explore page instead of redirecting.
+# quay.io itself serves the Angular UI for anonymous visitors.
+FEATURE_UI_V2: false
+DEFAULT_UI: angular
+DISABLE_ANGULAR_UI: false
 
 MAIL_SERVER: ${SMTP_HOST}
 MAIL_PORT: ${SMTP_PORT}
@@ -825,7 +835,11 @@ if [ -z "${NO_COLOR:-}" ]; then
 
 ⚠️  Store these credentials securely — they are not saved in logs.
 
-$( [ "$SMTP_ENABLED" != "true" ] && printf '⚠️  SMTP is disabled. New users who register via the web UI will see an\n    activation email prompt and cannot log in until verified. Run:\n      %s <username>\n' "$VERIFY_USER_WRAPPER" )
+$( if [ "$SMTP_ENABLED" != "true" ]; then
+     printf '⚠️  SMTP is disabled. New users who register via the web UI will see an\n'
+     printf '    activation email prompt and cannot log in until verified. Run:\n'
+     printf '      %s <username>\n' "$VERIFY_USER_WRAPPER"
+   fi )
 ⚠️  A reverse proxy terminating TLS at https://${BASE_DOMAIN_NAME} is required
     before docker login / push / pull will work. Quay's bearer auth challenge
     redirects clients to the HTTPS domain — direct IP:port access is for
@@ -861,7 +875,11 @@ Account created and verified -- log in at https://${BASE_DOMAIN_NAME}
 
 Store these credentials securely -- they are not saved in logs.
 
-$( [ "$SMTP_ENABLED" != "true" ] && printf 'SMTP is disabled. New users who register via the web UI will see an\nactivation email prompt and cannot log in until verified. Run:\n  %s <username>\n' "$VERIFY_USER_WRAPPER" )
+$( if [ "$SMTP_ENABLED" != "true" ]; then
+     printf 'SMTP is disabled. New users who register via the web UI will see an\n'
+     printf 'activation email prompt and cannot log in until verified. Run:\n'
+     printf '  %s <username>\n' "$VERIFY_USER_WRAPPER"
+   fi )
 IMPORTANT: A reverse proxy terminating TLS at https://${BASE_DOMAIN_NAME}
 is required before docker login / push / pull will work. Quay's bearer
 auth challenge redirects clients to the HTTPS domain -- direct IP:port
