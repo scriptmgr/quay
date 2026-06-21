@@ -115,9 +115,11 @@ Self-hosted Quay registry stack installer.
 Sets up Quay, Postgres, Redis, and Clair under /opt/quay.
 
 Options:
-  -h, --help      Show this help message and exit
-  -v, --version   Show version and exit
-  --no-color      Suppress colored output in the final summary
+  -h, --help         Show this help message and exit
+  -v, --version      Show version and exit
+  --color=auto|yes|no  Color output (auto: TTY detect; yes: force on; no: force off)
+  --debug            Enable debug mode (set -x)
+  --remove           Stop all containers and delete ${OPT_ROOT} (destructive)
 
 Environment variables (set before running):
   DOMAIN              Registry hostname (e.g. registry.example.com)
@@ -134,16 +136,55 @@ persisted to ${ENV_FILE}.
 HELP
 }
 # - - - - - - - - - - - - - - - - - - - - - - - - -
+# Resolve whether color output should be used:
+#   --color=yes   → always on
+#   --color=no    → always off (same as NO_COLOR env var)
+#   --color=auto  → on when stdout is a TTY and NO_COLOR is unset
+COLOR_FLAG="${COLOR_FLAG:-auto}"
+__use_color() {
+  case "${COLOR_FLAG}" in
+    yes)  return 0 ;;
+    no)   return 1 ;;
+    auto) [ -z "${NO_COLOR:-}" ] && [ -t 1 ] && return 0 || return 1 ;;
+    *)    return 1 ;;
+  esac
+}
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+# Tear down the entire Quay stack and remove OPT_ROOT
+__do_remove() {
+  __info "Stopping Quay stack ..."
+  if [ -f "${COMPOSE_FILE}" ]; then
+    if __have docker && docker compose version >/dev/null 2>&1; then
+      docker compose -f "${COMPOSE_FILE}" down --volumes --remove-orphans 2>/dev/null || true
+    elif __have docker-compose; then
+      docker-compose -f "${COMPOSE_FILE}" down --volumes --remove-orphans 2>/dev/null || true
+    fi
+  fi
+  if __have docker; then
+    docker ps -a --filter name=quay- --format '{{.ID}}' | xargs -r docker rm -f 2>/dev/null || true
+    docker network rm quay 2>/dev/null || true
+  fi
+  __info "Removing ${OPT_ROOT} ..."
+  \rm -rf "${OPT_ROOT}"
+  __info "Quay removed."
+}
+# - - - - - - - - - - - - - - - - - - - - - - - - -
 # Parse CLI flags
+DO_REMOVE=0
 for _arg in "$@"; do
   case "$_arg" in
     -h|--help)    __help; exit 0 ;;
     -v|--version) __version; exit 0 ;;
-    --no-color)   NO_COLOR=1 ;;
+    --color=*)    COLOR_FLAG="${_arg#--color=}" ;;
+    --color)      COLOR_FLAG="yes" ;;
+    --debug)      set -x ;;
+    --remove)     DO_REMOVE=1 ;;
     *)            __fail "Unknown option: ${_arg}. Use --help for usage." ;;
   esac
 done
 unset _arg
+if [ "$DO_REMOVE" -eq 1 ]; then __do_remove; exit 0; fi
+unset DO_REMOVE
 # - - - - - - - - - - - - - - - - - - - - - - - - -
 # Print version and ensure OPT_ROOT and BIN_DIR exist before sourcing .env
 __version
@@ -373,40 +414,131 @@ _env_tmp="${ENV_FILE}.tmp.$$"
 CFG="${QUAY_STACK_DIR}/config.yaml"
 __info "Writing ${CFG}"
 cat >"${CFG}.tmp" <<EOF
+# -------------------------------------------------------
+# Core / required
+# -------------------------------------------------------
 SERVER_HOSTNAME: ${BASE_DOMAIN_NAME}
 PREFERRED_URL_SCHEME: https
 EXTERNAL_TLS_TERMINATION: true
-TESTING: false
 SETUP_COMPLETE: true
+TESTING: false
+AUTHENTICATION_TYPE: Database
 
+# -------------------------------------------------------
+# Branding
+# -------------------------------------------------------
 REGISTRY_TITLE: ${REGISTRY_TITLE}
 REGISTRY_TITLE_SHORT: ${REGISTRY_TITLE_SHORT}
+AVATAR_KIND: local
 
+# -------------------------------------------------------
+# Superusers
+# -------------------------------------------------------
+SUPER_USERS:
+  - ${APP_ADMIN_USER}
+FEATURE_SUPER_USERS: true
+FEATURE_SUPERUSERS_FULL_ACCESS: true
+# Only superusers may create organisations (keeps namespace tidy on shared instances)
+FEATURE_SUPERUSERS_ORG_CREATION_ONLY: false
+
+# -------------------------------------------------------
+# User accounts
+# -------------------------------------------------------
 FEATURE_USER_CREATION: true
 FEATURE_USER_CREATION_INVITE_ONLY: false
-FEATURE_ANONYMOUS_ACCESS: true
-FEATURE_PUBLIC_CATALOG: true
-CREATE_PRIVATE_REPO_ON_PUSH: false
-FEATURE_REQUIRE_EMAIL_VERIFICATION: ${SMTP_ENABLED}
-FEATURE_GRAVATAR: true
-FEATURE_CHANGE_TAG_EXPIRATION: true
-FEATURE_REPO_MIRROR: true
-FEATURE_REQUIRE_TEAM_INVITE: true
-FEATURE_MAILING: ${SMTP_ENABLED}
-FEATURE_DIRECT_LOGIN: true
-FEATURE_SUPERUSERS_FULL_ACCESS: true
-FEATURE_PARTIAL_IMAGES: true
-FEATURE_SECURITY_NOTIFICATIONS: true
+# Record timestamp of last user login (displayed in superuser panel)
+FEATURE_USER_LAST_ACCESSED: true
+# Let users view their own action-log audit trail in the UI
+FEATURE_USER_LOG_ACCESS: true
+# Application-specific tokens for CI/CD pipelines and robot accounts
+FEATURE_APP_SPECIFIC_TOKENS: true
+# Do not prompt users for name/company on first sign-in
+FEATURE_USER_METADATA: false
+# Allow users to rename their own namespace
+FEATURE_USER_RENAME: false
+# Partial username autocomplete in search
+FEATURE_PARTIAL_USER_AUTOCOMPLETE: true
+# Keep sessions alive past browser close
+FEATURE_PERMANENT_SESSIONS: true
+PERMANENT_SESSION_LIFETIME: 2678400
 
-# Use the Angular v1 UI (legacy) instead of the React v2 UI.
-# The React v2 UI redirects all unauthenticated requests to /signin via its
-# axios interceptor on any 401, even when FEATURE_ANONYMOUS_ACCESS is true.
-# The Angular v1 UI handles 401 from /api/v1/user/ gracefully — it sets
-# anonymous: true and shows the public landing/explore page instead of redirecting.
-# quay.io itself serves the Angular UI for anonymous visitors.
+# -------------------------------------------------------
+# Repository & namespace behaviour
+# -------------------------------------------------------
+# Public repos are the default; users must opt in to make a repo private
+CREATE_PRIVATE_REPO_ON_PUSH: false
+# Allow docker pull without a namespace prefix (e.g. docker pull dockersrc.us/ubuntu)
+FEATURE_LIBRARY_SUPPORT: true
+# Allow tag-expiration to be set per-tag by repo admins
+FEATURE_CHANGE_TAG_EXPIRATION: true
+DEFAULT_TAG_EXPIRATION: 2w
+TAG_EXPIRATION_OPTIONS:
+  - 0s
+  - 1d
+  - 1w
+  - 2w
+  - 4w
+
+# -------------------------------------------------------
+# Anonymous & public access
+# -------------------------------------------------------
+# Allow unauthenticated Docker pull of public repos
+FEATURE_ANONYMOUS_ACCESS: true
+# Make /v2/_catalog return public repos for unauthenticated CLI clients
+FEATURE_PUBLIC_CATALOG: true
+
+# -------------------------------------------------------
+# UI — Angular v1 (legacy)
+#
+# The React v2 UI's axios interceptor redirects ANY 401 from /api/v1/user/
+# to /signin unconditionally, even when anonymous access is enabled.  The
+# Angular v1 UI's UserService error handler sets anonymous:true instead and
+# renders the landing/explore page — the same behaviour quay.io uses for
+# unauthenticated visitors.  Disable v2 until upstream fixes the redirect.
+# -------------------------------------------------------
 FEATURE_UI_V2: false
 DEFAULT_UI: angular
 DISABLE_ANGULAR_UI: false
+
+# -------------------------------------------------------
+# Security & sessions
+# -------------------------------------------------------
+# Mark session cookies Secure — safe because TLS is terminated upstream
+SESSION_COOKIE_SECURE: true
+# Allow non-browser clients (skopeo, crane, docker CLI) to call the API.
+# Setting true would block all API calls that lack the XHR header.
+BROWSER_API_CALLS_XHR_ONLY: false
+# Do not block pulls when the audit-log write fails (e.g. DB momentarily busy)
+ALLOW_PULLS_WITHOUT_STRICT_LOGGING: true
+
+# -------------------------------------------------------
+# Team & organisation
+# -------------------------------------------------------
+FEATURE_REQUIRE_TEAM_INVITE: true
+FEATURE_TEAM_SYNCING: false
+ROBOTS_DISALLOW: false
+
+# -------------------------------------------------------
+# Mirroring & replication
+# -------------------------------------------------------
+FEATURE_REPO_MIRROR: true
+REPO_MIRROR_TLS_VERIFY: true
+REPO_MIRROR_INTERVAL: 30
+REPO_MIRROR_ROLLBACK: false
+
+# -------------------------------------------------------
+# Build support — DISABLED; no build workers in this stack
+# -------------------------------------------------------
+FEATURE_BUILD_SUPPORT: false
+
+# -------------------------------------------------------
+# Notifications & mail
+# -------------------------------------------------------
+FEATURE_MAILING: ${SMTP_ENABLED}
+FEATURE_REQUIRE_EMAIL_VERIFICATION: ${SMTP_ENABLED}
+FEATURE_SECURITY_NOTIFICATIONS: true
+FEATURE_GRAVATAR: true
+FEATURE_DIRECT_LOGIN: true
 
 MAIL_SERVER: ${SMTP_HOST}
 MAIL_PORT: ${SMTP_PORT}
@@ -416,25 +548,43 @@ MAIL_USERNAME:
 MAIL_PASSWORD:
 MAIL_DEFAULT_SENDER: no-reply@${BASE_DOMAIN_NAME}
 
-SUPER_USERS:
-  - ${APP_ADMIN_USER}
+# -------------------------------------------------------
+# Partial / incomplete image layers
+# -------------------------------------------------------
+FEATURE_PARTIAL_IMAGES: true
 
+# -------------------------------------------------------
+# Storage
+# -------------------------------------------------------
 DISTRIBUTED_STORAGE_CONFIG:
   default:
     - LocalStorage
     - storage_path: /datastorage/registry
 DISTRIBUTED_STORAGE_DEFAULT_LOCATIONS: ["default"]
 DISTRIBUTED_STORAGE_PREFERENCE: ["default"]
+MAXIMUM_LAYER_SIZE: 20G
 
+# -------------------------------------------------------
+# Security scanning (Clair)
+# -------------------------------------------------------
 FEATURE_SECURITY_SCANNER: true
 SECURITY_SCANNER_V4_ENDPOINT: http://quay-clair:6060
 SECURITY_SCANNER_V4_NAMESPACE_WHITELIST: []
 
+# -------------------------------------------------------
+# Secrets & database
+# -------------------------------------------------------
 SECRET_KEY: ${QUAY_SECRET_KEY}
 DATABASE_SECRET_KEY: ${QUAY_SECRET_KEY}
 
 DB_URI: postgresql://${DB_USER_NAME}:${DB_USER_PASS}@quay-db:5432/${DB_CREATE_DATABASE_NAME}
+DB_CONNECTION_ARGS:
+  autorollback: true
+  threadlocals: true
 
+# -------------------------------------------------------
+# Redis
+# -------------------------------------------------------
 BUILDLOGS_REDIS:
   host: quay-redis
   port: 6379
@@ -813,7 +963,7 @@ unset _acct_new
 # - - - - - - - - - - - - - - - - - - - - - - - - -
 # Final summary — only place credentials are printed; never logged
 printf '\n'
-if [ -z "${NO_COLOR:-}" ]; then
+if __use_color; then
   cat <<EOF
 ✅ Quay is up and running!
 

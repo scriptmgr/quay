@@ -1,0 +1,247 @@
+.TH install 1 "June 21, 2026" "install 202606022117-git" "User Commands"
+.SH NAME
+install \- self-hosted Quay registry stack installer
+.SH SYNOPSIS
+.B install.sh
+[\fB\-h\fR|\fB\-\-help\fR]
+[\fB\-v\fR|\fB\-\-version\fR]
+[\fB\-\-color=auto|yes|no\fR]
+[\fB\-\-debug\fR]
+[\fB\-\-remove\fR]
+.SH DESCRIPTION
+Self-hosted Quay registry stack installer. Sets up Quay, Postgres, Redis, and Clair under /opt/quay.
+Detects available container engines (docker/podman), probes SMTP availability, generates secrets,
+and brings up the complete registry stack. Idempotent — safe to run multiple times; existing secrets
+and database data are preserved.
+.SH OPTIONS
+.TP
+.BR \-h ", " \-\-help
+Show help message and exit.
+.TP
+.BR \-v ", " \-\-version
+Show version and exit.
+.TP
+.BR \-\-color=auto|yes|no
+Color output control. Auto: detect TTY and respect NO_COLOR env var; yes: force color on; no: force color off (same as setting NO_COLOR).
+.TP
+.BR \-\-debug
+Enable debug mode (set -x).
+.TP
+.BR \-\-remove
+Stop all containers and delete /opt/quay (destructive).
+.SH ENVIRONMENT VARIABLES
+.TP
+.B DOMAIN
+Registry hostname (e.g., registry.example.com). If not set, auto-detected from hostname command.
+Must be a valid registerable domain. Required for operation.
+.TP
+.B APP_ADMIN_USER
+Superuser account username created on first run.
+Default: administrator
+.TP
+.B APP_ADMIN_PASS
+Superuser account password. Auto-generated (24 random chars) if not set.
+Store securely; never saved in logs.
+.TP
+.B REGISTRY_TITLE
+Full display name shown in the registry UI.
+Default: Quay
+.TP
+.B REGISTRY_TITLE_SHORT
+Short name shown in the browser tab.
+Default: value of REGISTRY_TITLE
+.TP
+.B QUAY_IMAGE
+Quay container image to deploy. Automatically resolves to the latest stable release if not set.
+Default: quay.io/projectquay/quay:3.17.2 (or detected latest)
+.TP
+.B CLAIR_IMAGE
+Clair (security scanner) container image. Automatically resolves to the latest stable release if not set.
+Default: quay.io/projectquay/clair:4.9.0 (or detected latest)
+.TP
+.B TZ
+Timezone for all containers (IANA format).
+Default: America/New_York
+.TP
+.B SMTP_HOST
+SMTP server hostname for outbound email. Auto-detected as the Docker bridge IP if not set.
+.TP
+.B SMTP_PORT
+SMTP server port.
+Default: 25
+.TP
+.B SMTP_ENABLED
+Whether to enable email notifications. Auto-probed on each run (never loaded from .env).
+Set to "true" or "false". Unset to enable auto-detection.
+.TP
+.B QUAY_BIND_ADDR
+Address to bind Quay's HTTP port. Auto-detected from container bridge network if not set.
+Default: 0.0.0.0 (or detected bridge IP)
+.TP
+.B QUAY_PORT
+Port for Quay's HTTP endpoint. Auto-selected from 62000-64999 range on first run; persisted thereafter.
+.TP
+.B HOST_IP_4
+Container-to-host reachability IP for SMTP and other services.
+Default: 172.17.0.1 (or auto-detected from interface)
+.SH FILES
+.TP
+.B /opt/quay/.env
+Single environment file containing all generated secrets, credentials, and runtime configuration.
+Mode 600 (readable by owner only). Never committed to version control.
+.TP
+.B /opt/quay/docker-compose.yml
+Docker Compose manifest for quay-app, quay-db, quay-redis, and quay-clair services.
+Regenerated on each run to refresh bind addresses and port settings.
+.TP
+.B /opt/quay/bin/quay-gc.sh
+Wrapper script for daily garbage collection. Automatically scheduled via systemd timer or cron.
+.TP
+.B /opt/quay/bin/quay-verify-user.sh
+Helper to mark a Quay user account as email-verified directly in PostgreSQL.
+Useful when SMTP is disabled and a user is stuck on the activation screen.
+.TP
+.B /opt/quay/volumes/
+All runtime data: database files, container logs, image storage, configuration, and credentials.
+Persisted across restarts and re-runs.
+.TP
+.B /opt/quay/volumes/config/quay/stack/config.yaml
+Quay configuration file. Contains feature flags, branding, security settings, and database/Redis addresses.
+Regenerated on each run (configuration; persistent state lives in the database).
+.TP
+.B /opt/quay/volumes/config/clair/config.yaml
+Clair v4 configuration. Contains database connection strings for the security scanner.
+Regenerated on each run.
+.TP
+.B /opt/quay/volumes/config/credentials/cosign.{key,pub}
+Ed25519 keypair for container image signing (cosign). Generated on first run if openssl or cosign is available.
+.TP
+.B /etc/systemd/system/quay-gc.timer
+Systemd timer triggering daily garbage collection at 03:00 local time (if systemd is available).
+.TP
+.B /etc/cron.d/quay-gc
+Fallback cron job for garbage collection (used if systemd is not available).
+.SH REQUIREMENTS
+.TP
+Requires at least one of:
+.RS
+.IP "•" 3
+Docker with Docker Compose plugin or standalone docker-compose binary
+.IP "•" 3
+Podman with podman-compose
+.RE
+.TP
+Also requires:
+.RS
+.IP "•" 3
+curl (for image version discovery and health checks)
+.IP "•" 3
+Standard POSIX tools: sh, awk, grep, tr, dd
+.IP "•" 3
+ss or netstat (for port availability checking)
+.IP "•" 3
+curl or nc (for SMTP detection)
+.IP "•" 3
+(optional) openssl or cosign (for Ed25519 keypair generation; script warns if absent)
+.RE
+.SH BEHAVIOR
+.TP
+.B Idempotent
+Safe to run multiple times on the same host. Existing secrets, database data, and container volumes persist.
+Configuration files are refreshed on each run; application state lives in the database.
+.TP
+.B SMTP Auto-Detection
+Probes port 25 (or SMTP_PORT) on first run and each subsequent run. Sets SMTP_ENABLED accordingly.
+Containers reach host SMTP via the Docker bridge IP (HOST_IP_4).
+.TP
+.B Secrets Persistence
+Generated on first run: database passwords, admin account credentials, Quay secret key, cosign keypair.
+Stored in /opt/quay/.env (mode 600). Reused on re-runs; never overwritten unless explicitly unset.
+.TP
+.B Port Selection
+Quay HTTP port auto-selected from 62000-64999 range on first run. Persisted to .env.
+Binding address auto-detected from Docker/Podman bridge network.
+.TP
+.B Image Resolution
+Fetches latest stable (x.y.z) release tags from Quay's API if QUAY_IMAGE/CLAIR_IMAGE not set.
+Falls back to known-good pinned versions on network failure or empty tag list.
+.TP
+.B Superuser Auto-Creation
+On first run, creates the superuser account (APP_ADMIN_USER) via Quay's registration API.
+Marks account verified directly in PostgreSQL so email verification does not block login,
+regardless of SMTP configuration.
+.TP
+.B Garbage Collection
+Systemd timer (preferred) or cron job runs daily at 03:00 local time.
+Executes Quay's internal garbage-collect and manage gc commands.
+Stale locks (>2h) are cleaned up automatically.
+.SH SECURITY NOTES
+.TP
+.B Secrets
+Admin password and all database credentials are printed once to stdout at the end of installation.
+Never appear in logs thereafter. Store securely.
+.TP
+.B TLS
+Quay expects TLS to be terminated upstream by a reverse proxy.
+Direct IP:port access works for health checks and web UI; bearer auth challenges redirect clients to HTTPS domain.
+.TP
+.B Credential Files
+cosign.key is mode 600 (owner only). Database credentials are embedded in config files (mode 640/660).
+Never committed to version control.
+.TP
+.B Umask
+Script sets umask 077 — all generated files are non-world-readable by default.
+.SH EXAMPLES
+.TP
+.B Install with defaults and auto-detect domain:
+.RS
+sudo sh install.sh
+.RE
+.TP
+.B Specify registry domain and admin user:
+.RS
+sudo DOMAIN=registry.example.com APP_ADMIN_USER=admin sh install.sh
+.RE
+.TP
+.B Specify custom titles and disable color in summary:
+.RS
+sudo REGISTRY_TITLE="My Registry" REGISTRY_TITLE_SHORT="Mine" sh install.sh --color=no
+.RE
+.TP
+.B Check version:
+.RS
+sh install.sh --version
+.RE
+.TP
+.B View help:
+.RS
+sh install.sh --help
+.RE
+.SH DIAGNOSTICS
+On failure, the script exits with status 1 and prints an ERROR message with timestamp.
+Common issues:
+.TP
+.B "Missing required command"
+Install docker (or podman), docker-compose (or podman-compose), and curl.
+.TP
+.B "Docker is installed but Docker Compose not found"
+Install docker-compose plugin: `docker compose version` or standalone package.
+.TP
+.B "DOMAIN must be a valid registerable domain"
+Set DOMAIN to a valid DNS name (e.g., DOMAIN=registry.example.com sh install.sh).
+.TP
+.B "Image pull failed"
+Verify QUAY_IMAGE and CLAIR_IMAGE are reachable and correct.
+Check network connectivity and image registry credentials (docker login).
+.TP
+.B "Quay did not become healthy within 300 s"
+First boot requires database migration. Check logs:
+.RS
+docker compose -f /opt/quay/docker-compose.yml -e /opt/quay/.env logs quay-app
+.RE
+.SH AUTHOR
+Jason Hempstead <git-admin@casjaysdev.pro>
+.SH CONTACT
+https://github.com/casjaysdev/scriptmgr
+.SH SEE ALSO
+docker-compose(1), podman-compose(1), quay(8)
