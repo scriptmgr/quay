@@ -744,16 +744,20 @@ __info "  quay-clair: ${CLAIR_IMAGE}"
 $COMPOSE --env-file "$ENV_FILE" -f "$COMPOSE_FILE" pull 2>&1 || \
   __fail "Image pull failed. Check that QUAY_IMAGE=${QUAY_IMAGE} and CLAIR_IMAGE=${CLAIR_IMAGE} exist and are reachable."
 
+# Start support services without recreating (db/redis data must survive re-runs).
+# Force-recreate quay-app and quay-clair so they always pick up the refreshed configs.
 __info "Starting Quay stack…"
-$COMPOSE --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d 2>&1 || \
-  __fail "Failed to start Quay stack — check logs: $COMPOSE --env-file $ENV_FILE -f $COMPOSE_FILE logs"
+$COMPOSE --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d quay-db quay-redis 2>&1 || \
+  __fail "Failed to start quay-db / quay-redis — check logs: $COMPOSE --env-file $ENV_FILE -f $COMPOSE_FILE logs"
+$COMPOSE --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --force-recreate quay-clair quay-app 2>&1 || \
+  __fail "Failed to start quay-app / quay-clair — check logs: $COMPOSE --env-file $ENV_FILE -f $COMPOSE_FILE logs"
 # - - - - - - - - - - - - - - - - - - - - - - - - -
 # Wait for Quay to become healthy (up to 300 s; first boot takes longer due to DB migrations)
 sleep 2
 HEALTH_OK=0
 _tries=150
 while [ "$_tries" -gt 0 ]; do
-  if \curl -fsS "http://${QUAY_BIND_ADDR}:${QUAY_PORT}/health/instance" >/dev/null 2>&1; then
+  if \curl -fsS --max-time 3 "http://${QUAY_BIND_ADDR}:${QUAY_PORT}/health/instance" >/dev/null 2>&1; then
     HEALTH_OK=1
     break
   fi
@@ -774,9 +778,11 @@ else
 fi
 __info "Creating superuser account: ${APP_ADMIN_USER}"
 _acct_new=0
-_acct_http=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "http://${QUAY_BIND_ADDR}:${QUAY_PORT}/api/v1/user/" \
+_acct_http=$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' \
+  -X POST "http://${QUAY_BIND_ADDR}:${QUAY_PORT}/api/v1/user/" \
   -H "Content-Type: application/json" \
-  -d "{\"username\":\"${APP_ADMIN_USER}\",\"password\":\"${APP_ADMIN_PASS}\",\"email\":\"${APP_ADMIN_USER}@${BASE_DOMAIN_NAME}\"}" 2>/dev/null || printf '000')
+  -d "{\"username\":\"${APP_ADMIN_USER}\",\"password\":\"${APP_ADMIN_PASS}\",\"email\":\"${APP_ADMIN_USER}@${BASE_DOMAIN_NAME}\"}" \
+  2>/dev/null || printf '000')
 case "$_acct_http" in
   2*) _acct_new=1 ;;
   # 400/409 = account already exists — treat as success
