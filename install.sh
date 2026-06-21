@@ -1053,8 +1053,30 @@ _acct_http=$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' \
   2>/dev/null || printf '000')
 case "$_acct_http" in
   2*) _acct_new=1 ;;
-  # 403 = initialize endpoint disabled because users already exist — treat as success
-  403) _acct_new=0 ;;
+  # 403 = initialize endpoint disabled because users already exist.
+  # Sync the password from .env into the DB so re-runs always match stored credentials.
+  403)
+    _acct_new=0
+    _pw_hash=$($_cexec quay-app python3 -c "
+import sys
+pw = sys.argv[1].encode()
+try:
+    import bcrypt
+    print(bcrypt.hashpw(pw, bcrypt.gensalt(12)).decode())
+except ImportError:
+    from passlib.hash import bcrypt as bc
+    print(bc.hash(sys.argv[1]))
+" "$APP_ADMIN_PASS" 2>/dev/null || true)
+    if [ -n "${_pw_hash:-}" ]; then
+      $_cexec quay-db psql -U "${DB_USER_NAME}" -d "${DB_CREATE_DATABASE_NAME}" \
+        -c "UPDATE \"user\" SET password_hash='${_pw_hash}' WHERE username='${APP_ADMIN_USER}';" \
+        >/dev/null 2>&1 || \
+        __warn "Could not sync password for ${APP_ADMIN_USER} in the DB"
+    else
+      __warn "Could not generate bcrypt hash — password not synced; use the UI to reset it"
+    fi
+    unset _pw_hash
+    ;;
   *) __spin_stop fail
      __warn "Account creation returned HTTP ${_acct_http} — account may not have been created; check Quay logs" ;;
 esac
@@ -1067,7 +1089,7 @@ $_cexec quay-db psql -U "${DB_USER_NAME}" -d "${DB_CREATE_DATABASE_NAME}" \
 if [ "$_acct_new" -eq 1 ]; then
   __ok "Superuser account created and verified"
 else
-  __ok "Superuser account already exists — credentials unchanged"
+  __ok "Superuser account synced and verified"
 fi
 unset _acct_new
 # - - - - - - - - - - - - - - - - - - - - - - - - -
