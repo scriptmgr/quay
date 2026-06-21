@@ -1,6 +1,6 @@
 # Quay Installer (Self-Hosted Container Registry)
 
-A single POSIX-compliant installer script (`install.sh`) that sets up a full-featured [Quay](https://quay.io/) container registry with vulnerability scanning, image signing, SBOM support, and automated garbage collection.
+A single bash installer script (`install.sh`) that sets up a full-featured [Quay](https://quay.io/) container registry with vulnerability scanning, image signing, SBOM support, and automated garbage collection.
 
 Designed to be **distro-agnostic**, **idempotent**, and safe to re-run.
 
@@ -11,7 +11,7 @@ Designed to be **distro-agnostic**, **idempotent**, and safe to re-run.
 ### One-liner
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/scriptmgr/quay/main/install.sh | DOMAIN=registry.example.com sh
+curl -fsSL https://raw.githubusercontent.com/scriptmgr/quay/main/install.sh | DOMAIN=registry.example.com bash
 ```
 
 ### Git clone
@@ -19,14 +19,14 @@ curl -fsSL https://raw.githubusercontent.com/scriptmgr/quay/main/install.sh | DO
 ```sh
 git clone https://github.com/scriptmgr/quay
 cd quay
-DOMAIN=registry.example.com sh install.sh
+DOMAIN=registry.example.com bash install.sh
 ```
 
 The installer will:
 
 1. Detect or generate all secrets into `/opt/quay/.env` (mode 600)
 2. Create the directory tree under `/opt/quay/volumes/`
-3. Generate Quay and Clair configurations
+3. Generate Quay and Clair configurations (refreshed on every run)
 4. Pull and start all containers via Docker Compose
 5. Wait for Quay's health endpoint to respond
 6. Create and verify the superuser account automatically
@@ -37,14 +37,25 @@ The installer will:
 
 ## ⚙️ Configuration
 
+### Command-Line Flags
+
+| Flag | Description |
+|------|-------------|
+| `-h`, `--help` | Show help and exit |
+| `-v`, `--version` | Show version and exit |
+| `--color=auto\|yes\|no` | Color output — `auto`: TTY detect (default); `yes`: force on; `no`: force off. Also honors the `NO_COLOR` env var. |
+| `--debug` | Enable debug mode (`set -x`) |
+| `--remove` | Stop all containers and delete `/opt/quay` (see [Uninstall](#-uninstall)) |
+
 ### Environment Variables
 
-Pass these before `sh install.sh` to override defaults:
+Pass these before `bash install.sh` to override defaults:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DOMAIN` | auto-detected from `hostname` | Registry hostname (e.g. `registry.example.com`) |
 | `APP_ADMIN_USER` | `administrator` | Superuser account created on first run |
+| `APP_ADMIN_PASS` | auto-generated | Superuser password — auto-generated if not set |
 | `REGISTRY_TITLE` | `Quay` | Full display name shown in the UI |
 | `REGISTRY_TITLE_SHORT` | same as `REGISTRY_TITLE` | Short name shown in the browser tab |
 | `QUAY_IMAGE` | `quay.io/projectquay/quay:latest` | Quay image to deploy |
@@ -219,15 +230,11 @@ When SMTP is disabled, self-registered users are stuck on the activation screen.
 
 ### Re-run Installer
 
-The script is idempotent — re-run to update configurations. Existing secrets and data are preserved:
+The script is idempotent — re-run to update configurations. Existing secrets and data are preserved. `config.yaml` is always refreshed from the current environment variables and installer defaults:
 
 ```sh
-DOMAIN=registry.example.com sh install.sh
+DOMAIN=registry.example.com bash install.sh
 ```
-
-> **Note:** `config.yaml` is only written on first run to preserve manual edits. To apply
-> new settings (e.g. `REGISTRY_TITLE`), add them to
-> `/opt/quay/volumes/config/quay/stack/config.yaml` and restart.
 
 ---
 
@@ -270,9 +277,14 @@ SMTP is disabled and the user's account has not been verified in the database. R
 ## 🗑️ Uninstall
 
 ```sh
-cd /opt/quay
-docker compose down -v
-rm -rf /opt/quay
+bash install.sh --remove
+```
+
+This stops all containers (`docker compose down --volumes`), removes any stray `quay-*` containers and the `quay` Docker network, then deletes `/opt/quay`.
+
+To also remove the garbage collection timer:
+
+```sh
 systemctl disable --now quay-gc.timer quay-gc.service 2>/dev/null || true
 rm -f /etc/systemd/system/quay-gc.{service,timer} /etc/cron.d/quay-gc
 ```
@@ -281,7 +293,7 @@ rm -f /etc/systemd/system/quay-gc.{service,timer} /etc/cron.d/quay-gc
 
 ## 📋 Requirements
 
-- Linux host with: `sh`, `awk`, `sed`, `grep`, `tr`, `dd`, `curl`, `ss`
+- Linux host with: `bash`, `awk`, `sed`, `grep`, `tr`, `dd`, `curl`, `ss`
 - Docker (with Compose plugin) or Podman + podman-compose
 - Outbound internet access (image pulls, Clair vulnerability database updates)
 - Valid domain name pointing to your host (for TLS via reverse proxy)
@@ -297,13 +309,13 @@ This repo ships a single installer script — there is no build system. To contr
 git clone https://github.com/scriptmgr/quay
 cd quay
 # Edit install.sh, test with:
-DOMAIN=test.example.com sh install.sh
+DOMAIN=test.example.com bash install.sh
 ```
 
 Run shellcheck before submitting:
 
 ```sh
-shellcheck -s sh install.sh
+shellcheck -s bash install.sh
 ```
 
 ---
