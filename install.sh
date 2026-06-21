@@ -150,9 +150,14 @@ __use_color() {
   esac
 }
 # - - - - - - - - - - - - - - - - - - - - - - - - -
-# Tear down the entire Quay stack and remove OPT_ROOT
+# Tear down the entire Quay stack, remove images, and delete OPT_ROOT
 __do_remove() {
   __info "Stopping Quay stack ..."
+  # Source .env so we know exactly which quay/clair image tags were installed
+  if [ -f "${ENV_FILE}" ]; then
+    # shellcheck disable=SC1090
+    . "${ENV_FILE}"
+  fi
   if [ -f "${COMPOSE_FILE}" ]; then
     if __have docker && docker compose version >/dev/null 2>&1; then
       docker compose -f "${COMPOSE_FILE}" down --volumes --remove-orphans 2>/dev/null || true
@@ -161,8 +166,17 @@ __do_remove() {
     fi
   fi
   if __have docker; then
+    # Force-remove any stray quay-* containers that compose missed
     docker ps -a --filter name=quay- --format '{{.ID}}' | xargs -r docker rm -f 2>/dev/null || true
     docker network rm quay 2>/dev/null || true
+    # Remove all four stack images so a subsequent install always pulls fresh layers
+    __info "Removing stack images ..."
+    docker rmi --force \
+      "${QUAY_IMAGE:-quay.io/projectquay/quay:latest}" \
+      "${CLAIR_IMAGE:-quay.io/projectquay/clair:latest}" \
+      "docker.io/library/postgres:15-alpine" \
+      "docker.io/library/redis:7-alpine" \
+      2>/dev/null || true
   fi
   __info "Removing ${OPT_ROOT} ..."
   \rm -rf "${OPT_ROOT}"
