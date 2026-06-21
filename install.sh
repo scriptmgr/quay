@@ -20,7 +20,7 @@
 # - - - - - - - - - - - - - - - - - - - - - - - - -
 # shellcheck disable=SC1001,SC1003,SC2001,SC2003,SC2016,SC2031,SC2090,SC2115,SC2120,SC2155,SC2199,SC2229,SC2317,SC2329,SC3043
 # - - - - - - - - - - - - - - - - - - - - - - - - -
-VERSION="202606211259-git"
+VERSION="202606211532-git"
 APPNAME="${0##*/}"
 # - - - - - - - - - - - - - - - - - - - - - - - - -
 set -e
@@ -850,7 +850,7 @@ cat >"${GC_WRAPPER}.tmp" <<'EOS'
 # - - - - - - - - - - - - - - - - - - - - - - - - -
 # shellcheck disable=SC1001,SC1003,SC2001,SC2003,SC2016,SC2031,SC2090,SC2115,SC2120,SC2155,SC2199,SC2229,SC2317,SC2329,SC3043
 # - - - - - - - - - - - - - - - - - - - - - - - - -
-VERSION="202606211259-git"
+VERSION="202606211532-git"
 APPNAME="${0##*/}"
 # - - - - - - - - - - - - - - - - - - - - - - - - -
 set -e
@@ -1080,6 +1080,30 @@ case "${_acct_result:-}" in
     ;;
 esac
 unset _acct_result
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+# Patch browser-tab titles.
+# Both UI templates hardcode "Quay" as the <title> text; REGISTRY_TITLE_SHORT
+# is only used for in-app branding (navbar, opensearch link).  We sed-patch
+# both files after the container is healthy.  Changes survive for the container
+# lifetime and are re-applied on every installer run (including after --remove).
+__section "UI title patch"
+__spin_start "Patching browser-tab titles to '${REGISTRY_TITLE_SHORT}'"
+
+# Angular Jinja2 template — the ng-bind attribute ends with ' · Quay' (or any
+# previously-patched value).  Replace the suffix with our configured short name.
+$_cexec quay-app sed -i \
+    "s| · [^']*'| · ${REGISTRY_TITLE_SHORT}'|g" \
+    /quay-registry/templates/index.html 2>/dev/null || true
+
+# React static bundle — single-line minified HTML with hardcoded <title>Quay</title>
+# and <meta content="Red Hat Quay">.  Replace both with configured values.
+$_cexec quay-app sed -i \
+    "s|<title>[^<]*</title>|<title>${REGISTRY_TITLE_SHORT}</title>|g ; \
+     s|content=\"Red Hat Quay\"|content=\"${REGISTRY_TITLE}\"|g" \
+    /quay-registry/static/patternfly/index.html 2>/dev/null || true
+
+__spin_stop ok
+__ok "Browser-tab titles patched to '${REGISTRY_TITLE_SHORT}'"
 # - - - - - - - - - - - - - - - - - - - - - - - - -
 # Final summary — only place credentials are printed; never logged
 printf '\n'
