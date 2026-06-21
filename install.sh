@@ -20,7 +20,7 @@
 # - - - - - - - - - - - - - - - - - - - - - - - - -
 # shellcheck disable=SC1001,SC1003,SC2001,SC2003,SC2016,SC2031,SC2090,SC2115,SC2120,SC2155,SC2199,SC2229,SC2317,SC2329,SC3043
 # - - - - - - - - - - - - - - - - - - - - - - - - -
-VERSION="202606211238-git"
+VERSION="202606211259-git"
 APPNAME="${0##*/}"
 # - - - - - - - - - - - - - - - - - - - - - - - - -
 set -e
@@ -850,7 +850,7 @@ cat >"${GC_WRAPPER}.tmp" <<'EOS'
 # - - - - - - - - - - - - - - - - - - - - - - - - -
 # shellcheck disable=SC1001,SC1003,SC2001,SC2003,SC2016,SC2031,SC2090,SC2115,SC2120,SC2155,SC2199,SC2229,SC2317,SC2329,SC3043
 # - - - - - - - - - - - - - - - - - - - - - - - - -
-VERSION="202606211238-git"
+VERSION="202606211259-git"
 APPNAME="${0##*/}"
 # - - - - - - - - - - - - - - - - - - - - - - - - -
 set -e
@@ -1067,7 +1067,8 @@ _acct_sql="INSERT INTO \"user\" (uuid, username, password_hash, email, verified,
 VALUES (gen_random_uuid()::text, '${APP_ADMIN_USER}', '${_pw_hash}', '${APP_ADMIN_USER}@${BASE_DOMAIN_NAME}', true, false, false, true, false, 1209600, 0, NOW(), NOW())
 ON CONFLICT (username) DO UPDATE SET password_hash = EXCLUDED.password_hash, verified = true
 RETURNING (xmax = 0) AS inserted;"
-_acct_result=$($_cexec quay-db psql -U "${DB_USER_NAME}" -d "${DB_CREATE_DATABASE_NAME}" -tA -c "$_acct_sql" 2>/dev/null || true)
+# head -1 strips the "INSERT 0 1" command tag that docker/podman exec leaks onto stdout even with -tA.
+_acct_result=$($_cexec quay-db psql -U "${DB_USER_NAME}" -d "${DB_CREATE_DATABASE_NAME}" -tA -c "$_acct_sql" 2>/dev/null | head -1 || true)
 unset _pw_hash _acct_sql
 
 case "${_acct_result:-}" in
