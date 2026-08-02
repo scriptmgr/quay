@@ -40,8 +40,9 @@ The installer will:
 4. Pull and start all containers via Docker Compose
 5. Wait for Quay's health endpoint to respond
 6. Create and verify the superuser account automatically
-7. Set up daily garbage collection (systemd timer preferred; cron fallback)
-8. Print superuser credentials — the only time they are displayed
+7. Patch browser-tab titles in the Quay UI to match `REGISTRY_TITLE_SHORT`
+8. Set up daily garbage collection and hourly Clair temp-file cleanup (systemd timer preferred; cron fallback)
+9. Print superuser credentials — the only time they are displayed
 
 ---
 
@@ -70,6 +71,7 @@ Pass these before `bash install.sh` to override defaults:
 | `REGISTRY_TITLE_SHORT` | same as `REGISTRY_TITLE` | Short name shown in the browser tab |
 | `QUAY_IMAGE` | `quay.io/projectquay/quay:latest` | Quay image to deploy |
 | `CLAIR_IMAGE` | `quay.io/projectquay/clair:latest` | Clair image to deploy |
+| `CLAIR_TMPFS_SIZE` | `4g` | Size cap for quay-clair's `/tmp` tmpfs (bounds leaked updater temp files — see [Clair not scanning](#clair-not-scanning)) |
 | `TZ` | `America/New_York` | Timezone for all containers |
 
 Database usernames, database name, and all passwords are randomized on first run and persisted to `/opt/quay/.env`. They are internal implementation details and are not user-configurable.
@@ -100,6 +102,7 @@ All runtime data lives under `/opt/quay/volumes/` — the Docker Compose `./volu
 ├── docker-compose.yml                # Generated compose file
 ├── bin/
 │   ├── quay-gc.sh                    # Garbage collection wrapper
+│   ├── quay-clair-tmp-clean.sh       # Purges stale Clair updater temp dumps (hourly)
 │   └── quay-verify-user.sh           # Manually verify a user account (SMTP-off fix)
 └── volumes/
     ├── data/
@@ -264,6 +267,24 @@ Clair downloads vulnerability databases on first start — this takes several mi
 docker logs quay-clair -f
 ```
 
+### Clair filling up disk with temp files
+
+Clair 4.9.0's updater writes vulnerability-DB dumps (`fetcher.*`, `rhel-vex.*` —
+hundreds of MB to ~1.6G each) to `/tmp` on every periodic update, and on some
+update failures leaves them behind — a known upstream Clair gap, not something
+this installer's config can fully prevent. Two mitigations are built in:
+
+- `quay-clair-tmp-clean.sh` purges stale dumps hourly (`bin/quay-clair-tmp-clean.sh`)
+- `/tmp` inside quay-clair is capped as tmpfs via `CLAIR_TMPFS_SIZE` (default `4g`),
+  so a leak between cleanup runs hits a bounded ceiling instead of filling the host disk
+
+To check current usage or force an immediate cleanup:
+
+```sh
+docker exec quay-clair du -sh /tmp
+/opt/quay/bin/quay-clair-tmp-clean.sh
+```
+
 ### Database connection errors
 
 ```sh
@@ -292,11 +313,13 @@ bash install.sh --remove
 
 This stops all containers (`docker compose down --volumes`), removes any stray `quay-*` containers and the `quay` Docker network, then deletes `/opt/quay`.
 
-To also remove the garbage collection timer:
+To also remove the garbage collection and Clair temp-cleanup timers:
 
 ```sh
 systemctl disable --now quay-gc.timer quay-gc.service 2>/dev/null || true
+systemctl disable --now quay-clair-tmp-clean.timer quay-clair-tmp-clean.service 2>/dev/null || true
 rm -f /etc/systemd/system/quay-gc.{service,timer} /etc/cron.d/quay-gc
+rm -f /etc/systemd/system/quay-clair-tmp-clean.{service,timer} /etc/cron.d/quay-clair-tmp-clean
 ```
 
 ---
